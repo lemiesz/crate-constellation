@@ -41,6 +41,10 @@ FILETYPE = {".mp3": 1, ".m4a": 4, ".aac": 4, ".flac": 5, ".wav": 11, ".aiff": 12
 # stamp, 788224 across every fresh export we have.
 ANALYSED_BITS = 41
 CONTENT_LINK = 788224
+# The rekordbox library id. Appears in three places that must agree: the u32
+# at track row offset 0x18 in export.pdb, content.masterDbId in
+# exportLibrary.db, and DBID in the sync ledgers.
+MASTER_DB_ID = 2090934051
 
 
 def art_bucket(artwork_id: int) -> str:
@@ -222,6 +226,19 @@ def anlz_hash(file_path: str) -> tuple[int, int]:
     return pv, hr
 FRESH = CORPUS / "fresh-export"
 
+# The player settings files.  Decks read these AND write them back, so a
+# device is expected to carry all five; a drive missing them is one rekordbox
+# has never prepared.  Each is taken from the most recent genuine export that
+# has it — they are byte-identical across our sources except DEVSETTING.DAT,
+# which only the newest one carries.
+SETTINGS_NAMES = ("DEVSETTING.DAT", "MYSETTING.DAT", "MYSETTING2.DAT",
+                  "DJMMYSETTING.DAT", "djprofile.nxs")
+SETTINGS_SOURCES = (CORPUS / "rb-export-2026-09-07/.PIONEER", FRESH, CORPUS)
+
+
+def settings_source(name: str) -> Path | None:
+    return next((d / name for d in SETTINGS_SOURCES if (d / name).exists()), None)
+
 
 def target_pioneer_name(vol: Path) -> str:
     """rekordbox hides the library dir dot-prefixed on HFS+; plain on FAT."""
@@ -306,6 +323,8 @@ def plan(library_db: Path, playlist_ids: list[str]) -> dict:
             sid_of[q["id"]] = sid
             nodes.append({"sid": sid, "parent_sid": parent_sid, "sort": sort,
                           "is_folder": q["kind"] == "folder", "name": q["name"],
+                          "lib_id": int(q["id"]),
+                          "parent_lib_id": int(parent_lib) if parent_lib else 0,
                           "track_ids": tracks_of.get(q["id"], [])})
             if q["kind"] == "folder":
                 walk(q["id"], sid)
@@ -316,6 +335,40 @@ def plan(library_db: Path, playlist_ids: list[str]) -> dict:
     return {"tracks": tracks, "playlists": pls, "nodes": nodes,
             "n_tracks": len(tracks),
             "total_bytes": total, "missing_files": len(missing_files)}
+
+
+def write_sync_ledgers(rb_dir: Path, nodes: list[dict]) -> None:
+    """rekordbox's device sync ledgers, playlists3.sync and playlists3Plus.sync.
+
+    Plain XML naming the library and every playlist node on the device.  Two
+    byte-identical copies, CRLF throughout, trailing newline.  rekordbox
+    writes these on export and reads them back to work out what a device
+    already holds; deleting them is what triggers its multi-hour skeleton
+    rebuild, so a device that has none may well look wrong to it.
+
+    Ids are the library's own playlist ids in uppercase hex, Dev_ID is the
+    stick-side sequential id, Attribute is 1 for a folder and 0 for a
+    playlist, and CheckType follows: 2 for folders, 1 for playlists.  The
+    root row is always Id 0 with Dev_ID 0.
+    """
+    ms = int(time.time() * 1000)
+    lines = ['<?xml version="1.0" encoding="UTF-8"?>', '',
+             f'<Sync DBID="{MASTER_DB_ID}" AutomaticSync="1" AllPlaylists="0"'
+             ' IncludeCue="1" ForcedSync="0" Timestamp="0">',
+             '  <Playlists>',
+             '    <NODE Id="0" ParentId="0" Attribute="1" Lib_Type="0"'
+             ' Dev_ID="0" Timestamp="0" CheckType="2"/>']
+    for nd in nodes:
+        folder = bool(nd["is_folder"])
+        lines.append(
+            f'    <NODE Id="{nd["lib_id"]:X}" ParentId="{nd["parent_lib_id"]:X}"'
+            f' Attribute="{1 if folder else 0}" Lib_Type="0"'
+            f' Dev_ID="{nd["sid"]}" Timestamp="{ms}"'
+            f' CheckType="{2 if folder else 1}"/>')
+    lines += ['  </Playlists>', '</Sync>', '']
+    blob = "\r\n".join(lines).encode("utf-8")
+    for name in ("playlists3.sync", "playlists3Plus.sync"):
+        (rb_dir / name).write_bytes(blob)
 
 
 def _build_onelibrary(dst: Path, tracks: list[dict], nodes: list[dict],
@@ -379,7 +432,7 @@ def _build_onelibrary(dst: Path, tracks: list[dict], nodes: list[dict],
              t["comment"] or "", t["rating"] or 0, t["year"],
              today, today, t["stick_path"], Path(t["path"]).name,
              t["size"] or 0, FILETYPE.get(ext, 0), br, depth, srate,
-             2090934051, int(t["id"]), t["stick_anlz"], ANALYSED_BITS, CONTENT_LINK))
+             MASTER_DB_ID, int(t["id"]), t["stick_anlz"], ANALYSED_BITS, CONTENT_LINK))
         t["content_id"] = i
 
     cid_of = {t["id"]: t["content_id"] for t in tracks}
@@ -675,6 +728,9 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         fltr = CORPUS / "deck-verified/rekordbox/RBFLTR.DAT"
         if fltr.exists():
             shutil.copy2(fltr, rb_dir / "RBFLTR.DAT")
+        # sync ledgers: rekordbox writes these on every export and reads them
+        # back to see what a device already holds
+        write_sync_ledgers(rb_dir, p["nodes"])
 
         mark("databases (OneLibrary + export.pdb + exportExt)")
 
@@ -738,12 +794,9 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         # without a file every real export has.  The other four settings files
         # are byte-identical across our sources.
         job["step"] = "player settings"
-        settings_names = ("DEVSETTING.DAT", "MYSETTING.DAT", "MYSETTING2.DAT",
-                          "DJMMYSETTING.DAT", "djprofile.nxs")
-        settings_srcs = [CORPUS / "rb-export-2026-09-07/.PIONEER", FRESH, CORPUS]
         missing_settings = []
-        for name in settings_names:
-            src = next((d / name for d in settings_srcs if (d / name).exists()), None)
+        for name in SETTINGS_NAMES:
+            src = settings_source(name)
             if src is None:
                 missing_settings.append(name)
                 continue
