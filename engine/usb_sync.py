@@ -725,7 +725,18 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         # 332s sync), and every track is independent, so it runs on a pool.
         # The work is file reads, a byte splice and file writes, so threads
         # overlap the I/O rather than fighting over the interpreter.
-        job["step"] = "copying analysis (waveforms + grids; cue materialization TBD)"
+        job["step"] = "copying analysis (waveforms, grids and cues)"
+        # rekordbox keeps cues in its database and only writes them into the
+        # analysis files at export, so the files we copy have empty cue
+        # containers and a stick built from them has no hot cues at all. We
+        # fill them in here, on the same read and write.
+        from .anlz import cue_container_indexes
+        from .cues import containers_for, load_cues, write_into
+        all_cues = load_cues(library_db)
+        n_cued = 0
+        if all_cues:
+            log(f"cues: {sum(len(v) for v in all_cues.values())} in the library "
+                f"across {len(all_cues)} tracks")
 
         def one_analysis(t) -> int:
             if not t["anlz_path"]:
@@ -735,12 +746,24 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
                 return 0
             dst_dir = vol / Path(t["stick_anlz"].lstrip("/")).parent
             dst_dir.mkdir(parents=True, exist_ok=True)
+            rows = all_cues.get(str(t["id"]))
+            built = containers_for(rows) if rows else None
+            wrote_cues = False
             for f in src_dir.iterdir():
-                if f.suffix.upper() not in (".DAT", ".EXT", ".2EX"):
+                suffix = f.suffix.upper()
+                if suffix not in (".DAT", ".EXT", ".2EX"):
                     continue
-                (dst_dir / f.name).write_bytes(
-                    patch_anlz_path(f.read_bytes(), t["stick_path"]))
-            return 1
+                data = patch_anlz_path(f.read_bytes(), t["stick_path"])
+                if built and suffix in (".DAT", ".EXT"):
+                    try:
+                        want = built[suffix.lstrip(".")]
+                        if cue_container_indexes(data):
+                            data = write_into(data, want)
+                            wrote_cues = True
+                    except Exception as e:            # noqa: BLE001
+                        log(f"cues skipped for {Path(t['path']).name}: {e}")
+                (dst_dir / f.name).write_bytes(data)
+            return 2 if wrote_cues else 1
 
         copied = seen_n = 0
         with ThreadPoolExecutor(max_workers=ANLZ_WORKERS) as ex:
@@ -754,7 +777,11 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
                     _persist_log(job, library_db)
                     return
                 try:
-                    copied += fut.result()
+                    got = fut.result()
+                    if got:
+                        copied += 1
+                    if got == 2:
+                        n_cued += 1
                 except Exception as e:                   # noqa: BLE001
                     log(f"analysis failed for one track: {e}")
                 if seen_n % 25 == 0 or seen_n == len(tracks):
@@ -766,6 +793,8 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         set_progress(job, "analysis", 1.0)
         log(f"analysis copied for {copied} tracks "
             f"(ANLZ dirs at Pioneer hash paths, {ANLZ_WORKERS} workers)")
+        if all_cues:
+            log(f"cues written into the analysis files for {n_cued} tracks")
         mark("analysis files")
 
         # 2b) album art, laid out exactly as rekordbox lays it out.  Four
