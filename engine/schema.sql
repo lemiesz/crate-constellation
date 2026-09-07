@@ -92,3 +92,21 @@ CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);
 CREATE INDEX IF NOT EXISTS idx_tracks_bpm    ON tracks(bpm);
 CREATE INDEX IF NOT EXISTS idx_tt_tag        ON track_tags(tag_id);
 CREATE INDEX IF NOT EXISTS idx_pt_playlist   ON playlist_tracks(playlist_id);
+
+-- Hot cues and memory cues, mirrored from rekordbox so a sync never has to
+-- open its database. rekordbox keeps these in its own tables and only
+-- materializes them into the analysis files at export time, which is why a
+-- stick built by copying those files carries none.
+CREATE TABLE IF NOT EXISTS cues (
+  track_id   TEXT NOT NULL REFERENCES tracks(id),
+  kind       INTEGER NOT NULL,     -- 0 = memory cue, 1..8 = hot cue slots A..H
+  in_msec    INTEGER,              -- position, milliseconds
+  out_msec   INTEGER,              -- loop end, -1 or NULL when not a loop
+  color      INTEGER,
+  color_idx  INTEGER,
+  comment    TEXT,
+  loop_beats INTEGER
+  -- deliberately no primary key: (track_id, kind, in_msec) is NOT unique in
+  -- rekordbox and using it as one silently discarded 20,000 of 202,000 cues
+);
+CREATE INDEX IF NOT EXISTS idx_cues_track ON cues(track_id);

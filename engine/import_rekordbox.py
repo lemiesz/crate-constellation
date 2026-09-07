@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 from pyrekordbox import Rekordbox6Database
+from sqlalchemy import text as sa_text
 from pyrekordbox.db6 import tables
 
 HERE = Path(__file__).resolve().parent
@@ -44,7 +45,8 @@ def main() -> None:
 
     out = sqlite3.connect(args.db)
     out.executescript((HERE / "schema.sql").read_text())
-    for t in ("track_tags", "playlist_tracks", "files", "tracks", "tags", "playlists"):
+    for t in ("track_tags", "playlist_tracks", "files", "tracks", "tags",
+              "playlists", "cues"):
         out.execute(f"DELETE FROM {t}")
 
     # --- reference maps -------------------------------------------------
@@ -132,6 +134,19 @@ def main() -> None:
 
     out.execute("INSERT OR REPLACE INTO meta VALUES ('imported_at', datetime('now'))")
     out.execute("INSERT OR REPLACE INTO meta VALUES ('source', 'rekordbox master.db')")
+    # --- cues -----------------------------------------------------------
+    # One bulk read: ~200k rows in about a second. Per-track queries would be
+    # 19,000 round trips for the same data.
+    cue_rows = [(str(c[0]), c[1], c[2], c[3], c[4], c[5], c[6], c[7])
+                for c in rb.session.execute(sa_text(
+                    "SELECT ContentID, Kind, InMsec, OutMsec, Color, "
+                    "ColorTableIndex, Comment, BeatLoopSize FROM djmdCue "
+                    "WHERE rb_local_deleted = 0 AND ContentID IS NOT NULL"))]
+    out.executemany("INSERT INTO cues (track_id, kind, in_msec, "
+                    "out_msec, color, color_idx, comment, loop_beats) "
+                    "VALUES (?,?,?,?,?,?,?,?)", cue_rows)
+    print(f"  cues: {len(cue_rows)}")
+
     out.commit()
     out.close()
 
