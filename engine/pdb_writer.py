@@ -199,6 +199,15 @@ def page_capacity_split(typ: int, rows: list[bytes], ghost: bool) -> list[list[b
 # stores the page index there, an empty one stores this.
 INDEX_NO_DATA = 0x03FFFFFF
 
+# File header @0x10 is the database format version, and rekordbox 7 expects 5.
+# Both of its own exports we hold write 5 in export.pdb AND exportExt.pdb.
+# Older ones wrote 1, and the deck-verified template we clone head pages from
+# carries 4. Inheriting that is what made rekordbox announce "library
+# conversion finished" every time it opened a drive we had synced: it was
+# upgrading the version field, then rewriting the sequence counter to match.
+# 5 is deck-safe — a rekordbox 7 export carrying it plays on the XDJ-XZ.
+DB_FORMAT_VERSION = 5
+
 
 def build_pdb(template_path: Path, datasets: dict[int, list[bytes]]) -> bytes:
     """Build export.pdb emulating rekordbox's fresh-export conventions, with
@@ -278,6 +287,7 @@ def build_pdb(template_path: Path, datasets: dict[int, list[bytes]]) -> bytes:
     out = bytearray(total_written * PAGE)
     out[0:PAGE] = td[0:PAGE]
     struct.pack_into("<I", out, 0x0C, next_unused)
+    struct.pack_into("<I", out, 0x10, DB_FORMAT_VERSION)
     struct.pack_into("<I", out, 0x14, tpl.sequence)
     for i, t in enumerate(tpl.tables):
         typ = t["type"]

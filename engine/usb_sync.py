@@ -728,9 +728,14 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         (rb_dir / "export.pdb").write_bytes(pdb_bytes)
         # exportExt: a fresh rekordbox one is library-independent (default My
         # Tags, no track refs) — ship it verbatim
-        ext_src = CORPUS / "deck-verified/rekordbox/exportExt.pdb"
-        if not ext_src.exists():
-            ext_src = FRESH / "rekordbox/exportExt.pdb"
+        # Prefer the newest genuine export: the older deck-verified copy
+        # carries format version 1 and another library's rows, both of which
+        # rekordbox rewrites on sight.
+        ext_src = next(
+            (c for c in (CORPUS / "rb-export-2026-09-07/.PIONEER/rekordbox/exportExt.pdb",
+                         CORPUS / "deck-verified/rekordbox/exportExt.pdb",
+                         FRESH / "rekordbox/exportExt.pdb") if c.exists()),
+            CORPUS / "deck-verified/rekordbox/exportExt.pdb")
         if ext_src.exists():
             shutil.copy2(ext_src, rb_dir / "exportExt.pdb")
         else:
