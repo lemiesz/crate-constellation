@@ -1,0 +1,10 @@
+.venv/
+node_modules/
+app/dist/
+library.db
+library.db-*
+__pycache__/
+art-cache/
+test-results/
+playwright-report/
+nohup.out
