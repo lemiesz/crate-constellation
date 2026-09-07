@@ -102,6 +102,10 @@ class Pdb:
     def track(self, ro: int) -> dict:
         d = self.data
         f = struct.unpack_from("<HHIIIII", d, ro)          # subtype..u4@0x14
+        # u18/u1a are the low and high halves of ONE u32 at 0x18: the
+        # rekordbox library id (2090934051 for this library), matching
+        # exportLibrary.db content.masterDbId.  Kept split for byte-parity
+        # round-tripping and because crate-digger names them separately.
         u18, u1a = struct.unpack_from("<HH", d, ro + 0x18)
         (artwork, key_id, orig_artist, label_id, remixer, bitrate, track_no,
          tempo, genre_id, album_id, artist_id, tid) = struct.unpack_from("<12I", d, ro + 0x1C)

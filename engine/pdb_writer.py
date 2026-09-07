@@ -47,6 +47,10 @@ def serialize_track(t: dict) -> bytes:
     buf = bytearray(0x88)
     struct.pack_into("<HHIIIII", buf, 0, 0x24, 0, 788224,
                      t.get("sample_rate", 44100), 0, t["file_size"], t["master_id"])
+    # Not two u16s: 0x18 is one u32 holding the rekordbox LIBRARY id, the same
+    # value as exportLibrary.db's content.masterDbId and playlists3.sync's
+    # DBID.  7971 + 31905 * 65536 = 2090934051.  crate-digger calls these
+    # unknown3/unknown4 and our parser still splits them that way.
     struct.pack_into("<HH", buf, 0x18, 7971, 31905)
     struct.pack_into("<12I", buf, 0x1C, t.get("artwork_id", 0), t["key_id"], 0, t["label_id"], 0,
                      t.get("bitrate", 0), 1, t["tempo"], 0, t["album_id"],

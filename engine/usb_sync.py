@@ -732,11 +732,24 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
             log(f"artwork verified: {4 * len(images)} files present for "
                 f"{len(images)} covers")
 
-        # 4) player settings from the corpus
+        # 4) player settings, each taken from the most recent rekordbox export
+        # that carries it.  This used to pick ONE source directory, and the one
+        # it picked has no DEVSETTING.DAT, so we silently shipped sticks
+        # without a file every real export has.  The other four settings files
+        # are byte-identical across our sources.
         job["step"] = "player settings"
-        settings_src = FRESH if (FRESH / "MYSETTING.DAT").exists() else CORPUS
-        for f in list(settings_src.glob("*.DAT")) + list(settings_src.glob("*.nxs")):
-            shutil.copy2(f, vol / pname / f.name)
+        settings_names = ("DEVSETTING.DAT", "MYSETTING.DAT", "MYSETTING2.DAT",
+                          "DJMMYSETTING.DAT", "djprofile.nxs")
+        settings_srcs = [CORPUS / "rb-export-2026-09-07/.PIONEER", FRESH, CORPUS]
+        missing_settings = []
+        for name in settings_names:
+            src = next((d / name for d in settings_srcs if (d / name).exists()), None)
+            if src is None:
+                missing_settings.append(name)
+                continue
+            shutil.copy2(src, vol / pname / name)
+        if missing_settings:
+            log(f"settings not found in the corpus: {', '.join(missing_settings)}")
         gcred = FRESH / "extracted/gcred.dat"
         if gcred.exists():
             (vol / pname / "extracted").mkdir(exist_ok=True)
