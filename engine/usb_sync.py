@@ -716,7 +716,8 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         # carries format version 1 and another library's rows, both of which
         # rekordbox rewrites on sight.
         ext_src = next(
-            (c for c in (CORPUS / "rb-export-2026-09-07/.PIONEER/rekordbox/exportExt.pdb",
+            (c for c in (CORPUS / "rb-converted-2026-09-07/exportExt.pdb",
+                         CORPUS / "rb-export-2026-09-07/.PIONEER/rekordbox/exportExt.pdb",
                          CORPUS / "deck-verified/rekordbox/exportExt.pdb",
                          FRESH / "rekordbox/exportExt.pdb") if c.exists()),
             CORPUS / "deck-verified/rekordbox/exportExt.pdb")
