@@ -464,6 +464,7 @@ def wizard_targets():
     wizard says so rather than dropping a library onto a bare stick."""
     rows = usb_sync.targets()
     for r in rows:
+        r["link_mode"] = usb_sync.link_mode(r["volume"])
         try:
             r["device"] = usb_init.device_state(Path("/Volumes") / r["volume"])
         except Exception as e:                       # noqa: BLE001

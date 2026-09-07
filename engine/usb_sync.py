@@ -236,6 +236,75 @@ SETTINGS_NAMES = ("DEVSETTING.DAT", "MYSETTING.DAT", "MYSETTING2.DAT",
 SETTINGS_SOURCES = (CORPUS / "rb-export-2026-09-07/.PIONEER", FRESH, CORPUS)
 
 
+# EXPERIMENTAL — drives that already hold a mirror of the library.
+#
+# A backup drive carries the same audio the library points at, so copying it
+# again wastes both time and a second copy of every byte. Where the mirror is
+# on the SAME volume we can hard-link instead: the deck-facing file under
+# /Contents becomes a second name for the file already on the drive, costing
+# no space and reading as an ordinary file to anything that opens it.
+#
+# Hard links, not symlinks. A player reads the filesystem directly and cannot
+# be relied on to follow a symlink, and a symlink also stores an absolute
+# path that means nothing on the deck. A hard link is indistinguishable from
+# a regular file.
+#
+# The two names share one set of bytes, so editing the audio through
+# /Contents would edit the backup as well. We only ever read audio, and the
+# UI says so on the drive this is enabled for.
+#
+#   mirror: directory on the volume under which the library tree is mirrored
+#   strip:  prefix of the library path that the mirror replaces
+LINK_MODE = {
+    "drcomputer-backups": {"mirror": "latest", "strip": "/Volumes/T7/"},
+}
+
+
+def link_mode(volume: str) -> dict | None:
+    return LINK_MODE.get(volume)
+
+
+# Files above this size are copied in chunks so a cancel stays responsive;
+# below it the kernel copy is used whole, which is much faster per file.
+CHUNKED_ABOVE = 64 * 1024 * 1024
+CHUNK = 8 * 1024 * 1024
+
+
+def copy_file(src: str, dst: Path, size: int, job: dict, alive) -> bool:
+    """Copy one track as fast as the platform allows.
+
+    shutil.copyfile uses macOS fcopyfile, a single kernel-side copy that
+    beats reading and writing through Python buffers. We give up per-chunk
+    progress for it, which only matters on files big enough that a cancel
+    would feel stuck, so those still go through the chunked path.
+    """
+    if size and size <= CHUNKED_ABOVE:
+        shutil.copyfile(src, dst)
+        job["bytes_done"] += size
+        return True
+    with open(src, "rb") as fi, open(dst, "wb") as fo:
+        while chunk := fi.read(CHUNK):
+            if not alive():
+                return False
+            fo.write(chunk)
+            job["bytes_done"] += len(chunk)
+    return True
+
+
+def link_source(vol: Path, track_path: str, size: int | None) -> Path | None:
+    """Where this track already lives on the target volume, if it does."""
+    cfg = LINK_MODE.get(vol.name)
+    if not cfg or not track_path or not track_path.startswith(cfg["strip"]):
+        return None
+    cand = (vol / cfg["mirror"] / track_path[len(cfg["strip"]):]).resolve()
+    try:
+        if cand.is_file() and (size is None or cand.stat().st_size == size):
+            return cand
+    except OSError:
+        pass
+    return None
+
+
 def settings_source(name: str) -> Path | None:
     return next((d / name for d in SETTINGS_SOURCES if (d / name).exists()), None)
 
@@ -534,7 +603,14 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
             t["stick_anlz"] = f"/{pname}/USBANLZ/P{pv:03X}/{hr:08X}/ANLZ0000.DAT"
 
         # 1) audio
-        job["step"] = "copying audio"
+        linking = link_mode(vol.name)
+        job["link_mode"] = bool(linking)
+        job["step"] = "linking audio" if linking else "copying audio"
+        if linking:
+            log(f"link mode: this drive mirrors the library under "
+                f"{linking['mirror']}/, so audio is hard-linked instead of copied")
+        n_linked = n_copied = 0
+        linked_bytes = 0
         for i, t in enumerate(tracks):
             if job["cancel"]:
                 job.update(state="cancelled")
@@ -544,20 +620,34 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
                 return
             dst = vol / t["stick_path"].lstrip("/")
             job.update(done=i, current=Path(t["path"]).name)
-            if not dst.exists() or dst.stat().st_size != t["size"]:
-                dst.parent.mkdir(parents=True, exist_ok=True)
-                with open(t["path"], "rb") as fi, open(dst, "wb") as fo:
-                    while chunk := fi.read(8 * 1024 * 1024):
-                        if not alive():
-                            return
-                        fo.write(chunk)
-                        job["bytes_done"] += len(chunk)
-            else:
+            if dst.exists() and dst.stat().st_size == t["size"]:
                 job["bytes_done"] += t["size"] or 0
+                continue
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            src = link_source(vol, t["path"], t["size"]) if linking else None
+            if src is not None:
+                try:
+                    if dst.exists():
+                        dst.unlink()
+                    os.link(src, dst)
+                    n_linked += 1
+                    linked_bytes += t["size"] or 0
+                    job["bytes_done"] += t["size"] or 0
+                    continue
+                except OSError as e:      # different device, permissions, ...
+                    log(f"link failed for {Path(t['path']).name} ({e}) — copying")
+            if not copy_file(t["path"], dst, t["size"] or 0, job, alive):
+                return
+            n_copied += 1
         job.update(done=len(tracks), current="")
+        job["n_linked"], job["n_copied"] = n_linked, n_copied
         _mb = job["bytes_done"] / 1e6
         _el = max(0.01, time.time() - _last[0])
-        log(f"⏱ audio copy: {_el:.1f}s ({_mb / _el:.1f} MB/s effective)")
+        if linking:
+            log(f"⏱ audio: {_el:.1f}s — {n_linked} hard-linked "
+                f"({linked_bytes / 1e9:.2f} GB not copied), {n_copied} copied")
+        else:
+            log(f"⏱ audio copy: {_el:.1f}s ({_mb / _el:.1f} MB/s effective)")
         _last[0] = time.time()
 
         # 2) analysis files
@@ -828,6 +918,8 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
             "n_playlists": len(p["playlists"]),
             "n_artwork": len(images),
             "engine_build": job.get("build", "unknown"),
+            "link_mode": bool(job.get("link_mode")),
+            "n_linked": job.get("n_linked", 0),
         }, indent=1))
 
         # flush the page cache so "done" means safe-to-eject (and MB/s is honest)

@@ -116,3 +116,18 @@ test("the engine reports which build is running", async ({ request }) => {
   expect(typeof d.stale).toBe("boolean");
   expect(d.stale, "engine is serving code older than the working tree").toBe(false);
 });
+
+// Experimental link mode: on a drive that already mirrors the library, audio
+// is hard-linked rather than copied. Hard links cannot cross a volume, so a
+// link always points at a file on the drive itself.
+test("link-mode drives are flagged to the wizard", async ({ request }) => {
+  const d = await (await request.get("/api/usb/wizard/targets")).json();
+  for (const row of d.rows) {
+    if (row.volume === "drcomputer-backups") {
+      expect(row.link_mode, "backup drive should be in link mode").toBeTruthy();
+      expect(row.link_mode.mirror).toBe("latest");
+    } else {
+      expect(row.link_mode ?? null, `${row.volume} should not be in link mode`).toBeNull();
+    }
+  }
+});

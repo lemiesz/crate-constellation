@@ -757,6 +757,23 @@ export function SyncWizard({ onClose }: { onClose: () => void }) {
               ))}
             </select>
           </div>
+          {target?.link_mode && (
+            <div className="wizinit wizlink" data-testid="link-mode">
+              <div className="wizinit-h">Experimental: audio will be linked, not copied</div>
+              <div className="wizinit-n">
+                This drive already holds a mirror of your library under{" "}
+                <code>{target.link_mode.mirror}/</code>. Tracks are hard-linked
+                into <code>/Contents</code> instead of copied, so the sync
+                takes seconds and adds no audio to the drive.
+              </div>
+              <div className="wizinit-n">
+                A hard link is a second name for the same file, not a shortcut,
+                so players read it as an ordinary track. It does mean the two
+                names share one copy of the bytes. Nothing here writes to audio,
+                but deleting the mirror would take the linked track with it.
+              </div>
+            </div>
+          )}
           {build?.stale && (
             <div className="wizinit" style={{ borderColor: "#e5484d" }} data-testid="stale-engine">
               <div className="wizinit-h">The engine is running older code than what is on disk</div>
