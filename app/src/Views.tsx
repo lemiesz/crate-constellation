@@ -672,7 +672,16 @@ export function SyncWizard({ onClose }: { onClose: () => void }) {
   const toggle = (id: string) =>
     setPicked(s2 => { const n = new Set(s2); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
+  // Folders start collapsed. The library has hundreds of playlists nested
+  // several deep, and opening the wizard onto all of them at once buries the
+  // handful you came to pick.
   const [closed, setClosed] = useState<Set<string>>(new Set());
+  const seededClosed = useRef(false);
+  useEffect(() => {
+    if (seededClosed.current || libPls.length === 0) return;
+    seededClosed.current = true;
+    setClosed(new Set(libPls.filter(x => x.kind === "folder").map(x => x.id)));
+  }, [libPls]);
   const kidsOf = (parent: string | null) =>
     libPls.filter(x => x.parent_id === parent).sort((a, b) => a.seq - b.seq);
   const descendants = (id: string): string[] => {
