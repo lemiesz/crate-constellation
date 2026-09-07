@@ -530,8 +530,19 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         pname = target_pioneer_name(vol)
         job["log"].append(f"library dir: /{pname} ({'hidden, HFS+' if pname.startswith('.') else 'FAT'})")
         for t in tracks:
-            artist_dir = _safe((t["artist"] or "Unknown").split("/")[0][:60])
-            t["stick_path"] = f"/Contents/{artist_dir}/{_safe(Path(t['path']).name)}"
+            # rekordbox's own layout: /Contents/<Artist>/<Album>/<file>, with
+            # the literal "UnknownAlbum" when a track has no album.  We used
+            # to drop the album level, and because rekordbox decides whether
+            # a track is already on a device by looking for it at the path IT
+            # would have used, ours were invisible to it: opening a synced
+            # drive made it re-export every track alongside our copies, which
+            # is the "library conversion" it announces.  The analysis folder
+            # address is a hash of this path, so this also puts our ANLZ where
+            # rekordbox and the players expect it.
+            artist_dir = _safe((t["artist"] or "UnknownArtist").split("/")[0][:60])
+            album_dir = _safe((t["album"] or "UnknownAlbum").split("/")[0][:60])
+            t["stick_path"] = (f"/Contents/{artist_dir}/{album_dir}/"
+                               f"{_safe(Path(t['path']).name)}")
             pv, hr = anlz_hash(t["stick_path"])
             t["stick_anlz"] = f"/{pname}/USBANLZ/P{pv:03X}/{hr:08X}/ANLZ0000.DAT"
 
