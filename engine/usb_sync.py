@@ -594,6 +594,12 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         else:
             (rb_dir / "exportExt.pdb").write_bytes(
                 W.build_pdb(CORPUS / "rekordbox/exportExt.pdb", {}))
+        # RBFLTR.DAT: rekordbox's device-filter stamp — every real export
+        # carries one; clone the deck-verified one (a stale/flag-corrupted
+        # leftover here can confuse rekordbox's device scan)
+        fltr = CORPUS / "deck-verified/rekordbox/RBFLTR.DAT"
+        if fltr.exists():
+            shutil.copy2(fltr, rb_dir / "RBFLTR.DAT")
 
         mark("databases (OneLibrary + export.pdb + exportExt)")
 
