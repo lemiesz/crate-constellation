@@ -39,7 +39,13 @@ export default function SyncDrawer() {
       </div>
       {jobs.map(j => {
         const hbAge = j.heartbeat ? Math.round(Date.now() / 1000 - j.heartbeat) : 0;
-        const pct = j.bytes_total ? (j.bytes_done / j.bytes_total) * 100 : 0;
+        // Overall progress across every phase, not bytes copied. Audio is a
+        // small slice of a sync and can be nearly free on a link-mode drive,
+        // so a bytes bar filled up and then sat at 100% through analysis,
+        // artwork and the databases, which read as finished-then-stalled.
+        const pct = typeof j.progress === "number"
+          ? j.progress * 100
+          : j.bytes_total ? (j.bytes_done / j.bytes_total) * 100 : 0;
         return (
           <div key={j.volume + j.started} className="sdjob">
             <div className="sdrow">

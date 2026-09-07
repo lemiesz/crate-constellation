@@ -11,7 +11,11 @@
 # Every sync also records the build that produced it (see /api/version), so a
 # stick can always be traced back to the code that wrote it.
 cd "$(dirname "$0")"
-RELOAD=(--reload --reload-dir engine)
+# --reload alone deadlocks here: the UI holds an open /api/events stream, and
+# uvicorn waits for it to close before restarting, so a reload hangs the
+# server instead of refreshing it. The graceful-shutdown timeout bounds that
+# wait, after which lingering connections are dropped and the reload lands.
+RELOAD=(--reload --reload-dir engine --timeout-graceful-shutdown 3)
 case "$1" in
 import)  ./.venv/bin/python engine/import_rekordbox.py ;;
 dev)     # hot-reload frontend on :5173 proxying to the engine

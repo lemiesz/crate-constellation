@@ -19,6 +19,7 @@ import re
 import shutil
 import sqlite3
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 import time
 import unicodedata
 from datetime import date
@@ -270,6 +271,40 @@ CHUNKED_ABOVE = 64 * 1024 * 1024
 CHUNK = 8 * 1024 * 1024
 
 
+# Progress used to be bytes copied over bytes total, so it reached 100% the
+# moment the audio finished and then sat there through analysis, artwork and
+# the databases. On a link-mode drive that is absurd: a 19,717-track sync
+# spent 2.5s on audio and 328s after it, so the bar was full for 99% of the
+# run and the job looked finished, then stale.
+#
+# Progress is now the weighted sum of every phase. The weights are estimates
+# of how long each phase will take, measured on that same sync: analysis
+# 10.2ms per track, artwork 1.6ms, databases 4.7ms, and copying at roughly
+# 100 MB/s. Estimating rather than fixing the weights matters because audio
+# dominates when copying and is nearly free when linking.
+PHASE_MS = {"analysis": 0.0102, "artwork": 0.0016, "databases": 0.0047,
+            # verification, settings, manifest and the flush: small, but
+            # the bar must not read 100% while they are still running
+            "finalize": 0.0012}
+COPY_BYTES_PER_S = 100e6
+# Analysis copying is I/O bound per track, so a small pool overlaps the waits.
+ANLZ_WORKERS = 8
+
+
+def phase_weights(n_tracks: int, bytes_to_copy: int) -> dict:
+    est = {"audio": bytes_to_copy / COPY_BYTES_PER_S}
+    est.update({k: n_tracks * v for k, v in PHASE_MS.items()})
+    total = sum(est.values()) or 1.0
+    return {k: v / total for k, v in est.items()}
+
+
+def set_progress(job: dict, phase: str, fraction: float) -> None:
+    """Record a phase as `fraction` complete and recompute the overall bar."""
+    job.setdefault("phases", {})[phase] = min(1.0, max(0.0, fraction))
+    w = job.get("weights") or {}
+    job["progress"] = sum(w.get(k, 0.0) * v for k, v in job["phases"].items())
+
+
 def copy_file(src: str, dst: Path, size: int, job: dict, alive) -> bool:
     """Copy one track as fast as the platform allows.
 
@@ -442,7 +477,8 @@ def write_sync_ledgers(rb_dir: Path, nodes: list[dict]) -> None:
 
 def _build_onelibrary(dst: Path, tracks: list[dict], nodes: list[dict],
                       tags_by_track: dict, banks: list[tuple], log,
-                      images: list[tuple] | None = None) -> None:
+                      images: list[tuple] | None = None, beat=None,
+                      pairs: list | None = None) -> None:
     template = CORPUS / "deck-verified/rekordbox/exportLibrary.db"
     if not template.exists():
         template = CORPUS / "rekordbox/exportLibrary.db"
@@ -479,6 +515,10 @@ def _build_onelibrary(dst: Path, tracks: list[dict], nodes: list[dict],
 
     today = date.today().isoformat()
     for i, t in enumerate(tracks, start=1):
+        # a 19k-track insert takes long enough that a silent worker looks
+        # stale to the panel, so it checks in as it goes
+        if beat and i % 500 == 0:
+            beat(i / max(1, len(tracks)))
         ext = Path(t["path"] or "").suffix.lower()
         # Column fidelity matters: rekordbox refuses a device whose OneLibrary
         # deviates from what it writes itself.  Two rules, both measured
@@ -520,6 +560,20 @@ def _build_onelibrary(dst: Path, tracks: list[dict], nodes: list[dict],
             if tid in cid_of:
                 db.execute("INSERT INTO playlist_content VALUES (?,?,?)",
                            (nd["sid"], cid_of[tid], seq))
+    # Matching: pairs computed over the tracks on THIS device, so a partial
+    # sync still ships a usable list instead of the handful that survive
+    # filtering the library-wide set. Row shape is the deck-verified one from
+    # push_matching_to_usb.py: rating NULL, createdDate in milliseconds.
+    if pairs:
+        import time as _t
+        ms = int(_t.time() * 1000)
+        rows = [(cid_of[a], cid_of[b], None, ms) for a, b, _sim in pairs
+                if a in cid_of and b in cid_of]
+        db.executemany("INSERT INTO recommendedLike "
+                       "(content_id_1, content_id_2, rating, createdDate) "
+                       "VALUES (?,?,?,?)", rows)
+        log(f"matching: {len(rows)} pairs written to exportLibrary.db")
+
     for iid, _apath, bpath in (images or []):
         # the two databases reference twin files: export.pdb the a-file,
         # OneLibrary the b-file.  Neither stores the _m high-res path.
@@ -582,6 +636,17 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         tracks = [t for t in p["tracks"] if t["size"]]
         job.update(total=len(tracks), bytes_total=p["total_bytes"])
 
+        # A leftover sync.temp means rekordbox was interrupted part-way through
+        # its own device sync. The marker makes players retry an export that is
+        # not happening and crash-loop, and whatever it left behind is
+        # half-written. Clear it before we write over the top.
+        for _pn in (".PIONEER", "PIONEER"):
+            _marker = vol / _pn / "rekordbox" / "sync.temp"
+            if _marker.exists():
+                _marker.unlink(missing_ok=True)
+                log("cleared a stale sync.temp — rekordbox had been "
+                    "interrupted mid-sync on this drive")
+
         # destination layout ('.PIONEER' on HFS+ — and the DB paths carry the dot)
         pname = target_pioneer_name(vol)
         job["log"].append(f"library dir: /{pname} ({'hidden, HFS+' if pname.startswith('.') else 'FAT'})")
@@ -605,6 +670,10 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         # 1) audio
         linking = link_mode(vol.name)
         job["link_mode"] = bool(linking)
+        job["weights"] = phase_weights(
+            len(tracks), 0 if linking else p["total_bytes"])
+        job["phases"] = {}
+        job["progress"] = 0.0
         job["step"] = "linking audio" if linking else "copying audio"
         if linking:
             log(f"link mode: this drive mirrors the library under "
@@ -620,6 +689,7 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
                 return
             dst = vol / t["stick_path"].lstrip("/")
             job.update(done=i, current=Path(t["path"]).name)
+            set_progress(job, "audio", (i + 1) / max(1, len(tracks)))
             if dst.exists() and dst.stat().st_size == t["size"]:
                 job["bytes_done"] += t["size"] or 0
                 continue
@@ -640,6 +710,7 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
                 return
             n_copied += 1
         job.update(done=len(tracks), current="")
+        set_progress(job, "audio", 1.0)
         job["n_linked"], job["n_copied"] = n_linked, n_copied
         _mb = job["bytes_done"] / 1e6
         _el = max(0.01, time.time() - _last[0])
@@ -650,21 +721,18 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
             log(f"⏱ audio copy: {_el:.1f}s ({_mb / _el:.1f} MB/s effective)")
         _last[0] = time.time()
 
-        # 2) analysis files
+        # 2) analysis files — the longest phase by far (measured: 202s of a
+        # 332s sync), and every track is independent, so it runs on a pool.
+        # The work is file reads, a byte splice and file writes, so threads
+        # overlap the I/O rather than fighting over the interpreter.
         job["step"] = "copying analysis (waveforms + grids; cue materialization TBD)"
-        copied = 0
-        for t in tracks:
-            if job["cancel"]:
-                job.update(state="cancelled")
-                _persist_log(job, library_db)
-                return
-            if not alive():
-                return
+
+        def one_analysis(t) -> int:
             if not t["anlz_path"]:
-                continue
+                return 0
             src_dir = (RB_SHARE / t["anlz_path"].lstrip("/")).parent
             if not src_dir.exists():
-                continue
+                return 0
             dst_dir = vol / Path(t["stick_anlz"].lstrip("/")).parent
             dst_dir.mkdir(parents=True, exist_ok=True)
             for f in src_dir.iterdir():
@@ -672,8 +740,32 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
                     continue
                 (dst_dir / f.name).write_bytes(
                     patch_anlz_path(f.read_bytes(), t["stick_path"]))
-            copied += 1
-        log(f"analysis copied for {copied} tracks (ANLZ dirs at Pioneer hash paths)")
+            return 1
+
+        copied = seen_n = 0
+        with ThreadPoolExecutor(max_workers=ANLZ_WORKERS) as ex:
+            futures = [ex.submit(one_analysis, t) for t in tracks]
+            for fut in as_completed(futures):
+                seen_n += 1
+                if job["cancel"] or job.get("abort"):
+                    for f2 in futures:
+                        f2.cancel()
+                    job.update(state="cancelled")
+                    _persist_log(job, library_db)
+                    return
+                try:
+                    copied += fut.result()
+                except Exception as e:                   # noqa: BLE001
+                    log(f"analysis failed for one track: {e}")
+                if seen_n % 25 == 0 or seen_n == len(tracks):
+                    if not alive():
+                        for f2 in futures:
+                            f2.cancel()
+                        return
+                    set_progress(job, "analysis", seen_n / max(1, len(tracks)))
+        set_progress(job, "analysis", 1.0)
+        log(f"analysis copied for {copied} tracks "
+            f"(ANLZ dirs at Pioneer hash paths, {ANLZ_WORKERS} workers)")
         mark("analysis files")
 
         # 2b) album art, laid out exactly as rekordbox lays it out.  Four
@@ -696,9 +788,11 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         art_ids: dict = {}
         images: list[tuple] = []
         cache = cached_deck_art(library_db, [t["id"] for t in tracks])
-        for t in tracks:
-            if not alive():
-                return
+        for _ai, t in enumerate(tracks):
+            if _ai % 25 == 0:
+                if not alive():
+                    return
+                set_progress(job, "artwork", _ai / max(1, len(tracks)))
             hit = cache.get(t["id"])
             if hit:
                 h, jpg80, jpg240 = hit
@@ -723,6 +817,7 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
                 art_ids[h] = (aid, apath, bpath)
                 images.append((aid, apath, bpath))
             t["artwork_id"] = t["image_id"] = art_ids[h][0]
+        set_progress(job, "artwork", 1.0)
         log(f"album art: {len(images)} unique covers across "
             f"{len({art_bucket(i) for i, _a, _b in images})} bucket(s), "
             f"80px + 240px _m variants, for "
@@ -744,13 +839,46 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         import tempfile
         with tempfile.TemporaryDirectory() as td:
             local_db = Path(td) / "exportLibrary.db"
+            job["step"] = "computing matching pairs for this device"
+            try:
+                from .matching import stick_pairs
+                alive()
+                match_pairs = stick_pairs(library_db, [t["id"] for t in tracks],
+                                          log=log)
+            except Exception as e:                       # noqa: BLE001
+                log(f"matching skipped: {e}")
+                match_pairs = []
+            alive()
+            job["step"] = "building exportLibrary.db"
+
+            def _ol_beat(frac):
+                alive()
+                set_progress(job, "databases", 0.5 * frac)
             maps = _build_onelibrary(local_db, tracks, p["nodes"],
                                      tags_by_track,
                                      ["Genre", "Energy", "Vibe", "Label"], log,
-                                     images=images)
+                                     images=images, beat=_ol_beat,
+                                     pairs=match_pairs)
             for suf in ("-wal", "-shm"):
                 Path(str(rb_dir / "exportLibrary.db") + suf).unlink(missing_ok=True)
             shutil.copy2(local_db, rb_dir / "exportLibrary.db")
+            # Read it back FROM THE DEVICE. A database that builds cleanly and
+            # then lands damaged is invisible otherwise: the deck reads
+            # export.pdb and plays fine while rekordbox and the newer players,
+            # which use this file, get nothing. Found exactly that on a drive
+            # where an interrupted rekordbox sync had overwritten ours.
+            try:
+                from .diff_onelibrary import _open as _ol_open
+                _chk = _ol_open(rb_dir / "exportLibrary.db")
+                _n = _chk.execute("SELECT count(*) FROM content").fetchone()[0]
+                if _n != len(tracks):
+                    raise AssertionError(
+                        f"reads back {_n} tracks, expected {len(tracks)}")
+                log(f"exportLibrary.db reads back from the device: {_n} tracks")
+            except Exception as e:                       # noqa: BLE001
+                raise AssertionError(
+                    f"exportLibrary.db did not survive the copy to the device "
+                    f"({e}) — the drive may have been interrupted mid-write")
 
         # 3b) export.pdb — the XDJ-XZ database, corpus-validated writer
         job["step"] = "building export.pdb (XDJ-XZ database)"
@@ -798,7 +926,10 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         tpl = CORPUS / "deck-verified/rekordbox/export.pdb"
         if not tpl.exists():
             tpl = FRESH / "rekordbox/export.pdb"
+        set_progress(job, "databases", 0.6)
+        alive()
         pdb_bytes = W.build_pdb(tpl, datasets)
+        set_progress(job, "databases", 0.85)
         (rb_dir / "export.pdb").write_bytes(pdb_bytes)
         # exportExt: a fresh rekordbox one is library-independent (default My
         # Tags, no track refs) — ship it verbatim
@@ -826,10 +957,12 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         # back to see what a device already holds
         write_sync_ledgers(rb_dir, p["nodes"])
 
+        set_progress(job, "databases", 1.0)
         mark("databases (OneLibrary + export.pdb + exportExt)")
 
         # verification gate: independent re-parse of what we just wrote
         job["step"] = "verifying export.pdb"
+        set_progress(job, "finalize", 0.1)
         q = Pdb(pdb_bytes)
         vt = len(q.rows(0)); ve = len(q.playlist_entries()); vp = len(q.playlist_tree())
         assert vt == len(tracks), f"track count {vt} != {len(tracks)}"
@@ -887,6 +1020,7 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         # it picked has no DEVSETTING.DAT, so we silently shipped sticks
         # without a file every real export has.  The other four settings files
         # are byte-identical across our sources.
+        set_progress(job, "finalize", 0.6)
         job["step"] = "player settings"
         missing_settings = []
         for name in SETTINGS_NAMES:
@@ -922,6 +1056,7 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
             "n_linked": job.get("n_linked", 0),
         }, indent=1))
 
+        set_progress(job, "finalize", 0.8)
         # flush the page cache so "done" means safe-to-eject (and MB/s is honest)
         job["step"] = "flushing to disk"
         import subprocess
@@ -929,6 +1064,7 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         mark("flush")
         total_el = time.time() - _t0
         job["n_playlists"] = len(p["playlists"])  # leaves; nodes incl folders
+        set_progress(job, "finalize", 1.0)
         job.update(state="done", step="complete",
                    summary=f"{len(tracks)} tracks · {len(p['playlists'])} playlists · "
                            f"{p['total_bytes'] / 1e9:.1f} GB in {total_el:.0f}s "
