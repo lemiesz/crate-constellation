@@ -942,11 +942,37 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
                          CORPUS / "deck-verified/rekordbox/exportExt.pdb",
                          FRESH / "rekordbox/exportExt.pdb") if c.exists()),
             CORPUS / "deck-verified/rekordbox/exportExt.pdb")
+        # exportExt carries the legacy Matching table (type 0), which is the
+        # one the XDJ-XZ reads — the OneLibrary list is for the newer players.
+        # Everything else in the file is cloned from the template, My Tags
+        # included, because that table is rekordbox's own and rewriting it
+        # brings the conversion prompt back.
+        #
+        # Row shape and ordering follow push_matching_legacy.py, which is
+        # deck-verified: one row per unordered pair, owned by the lower id,
+        # grouped by owner and sorted. That script cannot help on a stick we
+        # built, because it can only clone an existing populated page and ours
+        # start empty; our writer synthesizes the page instead.
+        ext_rows = []
+        if match_pairs:
+            _ms = int(time.time() * 1000)
+            _lo, _hi = _ms & 0xFFFFFFFF, _ms >> 32
+            by_owner: dict[int, set[int]] = {}
+            for a, b, _sim in match_pairs:
+                ca, cb = cid_of.get(a), cid_of.get(b)
+                if ca is None or cb is None:
+                    continue
+                by_owner.setdefault(min(ca, cb), set()).add(max(ca, cb))
+            for owner in sorted(by_owner):
+                for partner in sorted(by_owner[owner]):
+                    ext_rows.append(W.serialize_matching(_lo, _hi, partner, owner))
         if ext_src.exists():
-            shutil.copy2(ext_src, rb_dir / "exportExt.pdb")
-        else:
             (rb_dir / "exportExt.pdb").write_bytes(
-                W.build_pdb(CORPUS / "rekordbox/exportExt.pdb", {}))
+                W.build_pdb(ext_src, {0: ext_rows},
+                            build_types={0}, clone_types={1, 2, 3, 4, 5, 6, 7, 8},
+                            shift_types=()))
+            log(f"exportExt.pdb: {len(ext_rows)} legacy Matching rows "
+                f"(what the XZ reads), My Tags cloned from the template")
         # RBFLTR.DAT: rekordbox's device-filter stamp — every real export
         # carries one; clone the deck-verified one (a stale/flag-corrupted
         # leftover here can confuse rekordbox's device scan)

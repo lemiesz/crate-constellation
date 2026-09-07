@@ -127,7 +127,8 @@ def _alloc(typ: int, rlen: int) -> int:
 
 
 def build_page(page_index: int, typ: int, next_page: int, rows: list[bytes],
-               generation: int = 1, ghost: bool = False) -> bytes:
+               generation: int = 1, ghost: bool = False,
+               shift_types: tuple[int, ...] = (0, 2, 3)) -> bytes:
     """One data page, rekordbox-emulating (all rules measured, none assumed):
     ghost=True duplicates every row (ghost copies first, presence on the live
     half only — rekordbox's write-then-rewrite churn for tree/entries);
@@ -149,7 +150,12 @@ def build_page(page_index: int, typ: int, next_page: int, rows: list[bytes],
     for slot, r in enumerate(slots):
         offs.append(pos)
         buf[HDR + pos:HDR + pos + len(r)] = r
-        if typ in (0, 2, 3):        # subtype'd rows: index_shift = 0x20*slot
+        # Only export.pdb's subtyped rows carry an index_shift at offset 2.
+        # exportExt reuses the same type numbers for entirely different rows —
+        # its type 0 is the Matching table — and stamping a shift there
+        # overwrites the row's own data. It silently corrupted the timestamp
+        # in every matching row until a round-trip check caught it.
+        if typ in shift_types:      # subtype'd rows: index_shift = 0x20*slot
             struct.pack_into("<H", buf, HDR + pos + 2, (slot % 0x2000) * 0x20)
         pos += _alloc(typ, len(r))
     used = pos
@@ -209,10 +215,30 @@ INDEX_NO_DATA = 0x03FFFFFF
 DB_FORMAT_VERSION = 5
 
 
-def build_pdb(template_path: Path, datasets: dict[int, list[bytes]]) -> bytes:
+def serialize_matching(ms_lo: int, ms_hi: int, partner: int, owner: int) -> bytes:
+    """One exportExt type-0 matching row: 24 bytes, six little-endian u32.
+
+    Shape taken from push_matching_legacy.py, which is deck-verified: a
+    millisecond timestamp split low/high, the partner track, the owning track,
+    then a constant 0 and 3. One row per pair, owned by the first track.
+    """
+    return struct.pack("<6I", ms_lo, ms_hi, partner, owner, 0, 3)
+
+
+def build_pdb(template_path: Path, datasets: dict[int, list[bytes]],
+              build_types: set[int] | None = None,
+              clone_types: set[int] | None = None,
+              shift_types: tuple[int, ...] = (0, 2, 3)) -> bytes:
     """Build export.pdb emulating rekordbox's fresh-export conventions, with
     the deck-verified template supplying head pages, per-type generations,
     file sequence, and empty-candidate ordering."""
+    # export.pdb and exportExt.pdb number their tables independently: type 0
+    # is tracks in one and matching in the other, and exportExt's My Tag table
+    # must be cloned from the template rather than rebuilt, because it is
+    # rekordbox's own and rewriting it brings back the conversion prompt. So
+    # the policy is a parameter.
+    build_types = BUILD_TYPES if build_types is None else build_types
+    clone_types = CLONE_TYPES if clone_types is None else clone_types
     tpl = Pdb(Path(template_path).read_bytes())
     td = tpl.data
     n_tables = tpl.num_tables
@@ -231,8 +257,8 @@ def build_pdb(template_path: Path, datasets: dict[int, list[bytes]]) -> bytes:
     table_page_idx: dict[int, list[int]] = {}
     for t in tpl.tables:
         typ = t["type"]
-        rows_in = datasets.get(typ, []) if typ in BUILD_TYPES else None
-        if typ in BUILD_TYPES and rows_in:
+        rows_in = datasets.get(typ, []) if typ in build_types else None
+        if typ in build_types and rows_in:
             split = page_capacity_split(typ, rows_in, typ in GHOST_TYPES)
             idxs = [first_data[typ]]
             for _ in range(len(split) - 1):
@@ -241,11 +267,12 @@ def build_pdb(template_path: Path, datasets: dict[int, list[bytes]]) -> bytes:
             pages = [build_page(idxs[j], typ,
                                 idxs[j + 1] if j + 1 < len(idxs) else 0, rows,
                                 generation=tpl_gen[typ],
-                                ghost=typ in GHOST_TYPES)
+                                ghost=typ in GHOST_TYPES,
+                                shift_types=shift_types)
                      for j, rows in enumerate(split)]
             table_pages[typ] = pages
             table_page_idx[typ] = idxs
-        elif typ in CLONE_TYPES and tpl.chain(typ)[1:]:
+        elif typ in clone_types and tpl.chain(typ)[1:]:
             chain = tpl.chain(typ)[1:]
             idxs = [first_data[typ]]
             for _ in range(len(chain) - 1):
