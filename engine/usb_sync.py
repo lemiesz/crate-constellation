@@ -380,8 +380,14 @@ def _build_onelibrary(dst: Path, tracks: list[dict], nodes: list[dict],
     shutil.copy2(template, dst)
     db = sqlcipher3.connect(str(dst))
     db.execute(f"PRAGMA key = '{DLP_KEY}'")
+    # myTag is deliberately NOT cleared. The template carries rekordbox's own
+    # canonical My Tag table — the real banks, ids and ordering, straight out
+    # of a genuine export. We used to delete it and write our own, which
+    # dropped a whole bank and renumbered the rest; rekordbox restored its
+    # version every time it saw the drive. Its own exports carry no
+    # myTag_content at all, so that one is cleared and left empty.
     for t in ("content", "artist", "album", "genre", "label", "key", "playlist",
-              "playlist_content", "myTag", "myTag_content", "history",
+              "playlist_content", "myTag_content", "history",
               "history_content", "recommendedLike", "cue", "image",
               "hotCueBankList", "hotCueBankList_cue"):
         db.execute(f"DELETE FROM {t}")
@@ -450,29 +456,7 @@ def _build_onelibrary(dst: Path, tracks: list[dict], nodes: list[dict],
         # OneLibrary the b-file.  Neither stores the _m high-res path.
         db.execute("INSERT INTO image (image_id, path) VALUES (?,?)", (iid, bpath))
 
-    # My Tags: 4 banks + child tags + links
-    try:
-        mcols = [r[1] for r in db.execute("PRAGMA table_info(myTag)")]
-        tag_id = 0
-        bank_ids, tagid_of = {}, {}
-        for bseq, bank in enumerate([b for b in banks], start=1):
-            tag_id += 1
-            bank_ids[bank] = tag_id
-            db.execute("INSERT INTO myTag (myTag_id, sequenceNo, name, attribute, "
-                       "myTag_id_parent) VALUES (?,?,?,1,0)", (tag_id, bseq, bank))
-        for tid, tags in tags_by_track.items():
-            for bank, name in tags:
-                if (bank, name) not in tagid_of:
-                    tag_id += 1
-                    tagid_of[(bank, name)] = tag_id
-                    db.execute("INSERT INTO myTag (myTag_id, sequenceNo, name, attribute, "
-                               "myTag_id_parent) VALUES (?,?,?,0,?)",
-                               (tag_id, tag_id, name, bank_ids.get(bank, 0)))
-                if tid in cid_of:
-                    db.execute("INSERT OR IGNORE INTO myTag_content VALUES (?,?)",
-                               (tagid_of[(bank, name)], cid_of[tid]))
-    except Exception as e:  # schema drift — tags are a bonus, not a blocker
-        log(f"myTag skipped: {e}")
+    # (My Tags intentionally left as the template wrote them — see above.)
 
     db.execute("UPDATE property SET numberOfContents = ?, createdDate = ?",
                (len(tracks), today))
