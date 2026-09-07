@@ -443,11 +443,48 @@ def usb_patch_matching(body: dict = Body(default={})):
 
 # --- USB sync wizard ----------------------------------------------------
 from . import usb_sync
+from . import usb_init
 
 
 @app.get("/api/usb/wizard/targets")
 def wizard_targets():
-    return {"rows": usb_sync.targets()}
+    """Target drives, each with the state a sync would find it in.
+
+    A drive rekordbox has never prepared needs initializing first, and the
+    wizard says so rather than dropping a library onto a bare stick."""
+    rows = usb_sync.targets()
+    for r in rows:
+        try:
+            r["device"] = usb_init.device_state(Path("/Volumes") / r["volume"])
+        except Exception as e:                       # noqa: BLE001
+            r["device"] = {"state": "unknown", "notes": [str(e)],
+                           "can_initialize": False, "can_sync": True}
+    return {"rows": rows}
+
+
+@app.get("/api/usb/device-state")
+def usb_device_state(volume: str = ""):
+    vol = Path("/Volumes") / volume
+    if not volume or not vol.is_dir():
+        raise HTTPException(404, f"volume {volume!r} is not mounted")
+    return usb_init.device_state(vol)
+
+
+@app.post("/api/usb/initialize")
+def usb_initialize(body: dict = Body(...)):
+    """Prepare a drive as a Pioneer device: player settings, an empty library
+    and the sync ledgers. Never overwrites an existing library."""
+    volume = body.get("volume", "")
+    vol = Path("/Volumes") / volume
+    if not volume or not vol.is_dir():
+        raise HTTPException(404, f"volume {volume!r} is not mounted")
+    if volume in usb_sync.EXCLUDE_VOLUMES:
+        raise HTTPException(400, f"{volume} is not a valid target")
+    log: list[str] = []
+    try:
+        return usb_init.initialize(vol, log=log.append) | {"log": log}
+    except RuntimeError as e:
+        raise HTTPException(400, str(e))
 
 
 @app.get("/api/usb/wizard/state")

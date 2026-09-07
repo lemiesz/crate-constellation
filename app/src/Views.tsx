@@ -590,14 +590,35 @@ export function SyncWizard({ onClose }: { onClose: () => void }) {
   const [plan, setPlan] = useState<any | null>(null);
   const [syncState, setSyncState] = useState<Record<string, { total: number; on_stick: number }>>({});
 
-  useEffect(() => {
+  const loadTargets = (keepSelection = false) =>
     fetch("/api/usb/wizard/targets").then(r => r.json()).then(d => {
       setTargets(d.rows);
+      if (keepSelection) return;
       const stick = d.rows.find((t: any) => t.has_export) ?? d.rows[0];
       if (stick) setVol(stick.volume);
     });
+
+  useEffect(() => {
+    loadTargets();
     fetch("/api/playlists").then(r => r.json()).then(d => setLibPls(d.rows));
   }, []);
+
+  // A drive rekordbox has never prepared has no player settings and no
+  // library. Syncing onto it would produce a device unlike anything the
+  // players or rekordbox would have made, so we offer to initialize first.
+  // A drive rekordbox already initialized reports "ready" and is left alone.
+  const [initBusy, setInitBusy] = useState(false);
+  const [initErr, setInitErr] = useState<string | null>(null);
+  const initialize = () => {
+    setInitBusy(true); setInitErr(null);
+    fetch("/api/usb/initialize", {
+      method: "POST", headers: { "content-type": "application/json" },
+      body: JSON.stringify({ volume: vol }),
+    }).then(async r => {
+      if (!r.ok) setInitErr((await r.json()).detail ?? "could not initialize");
+      else await loadTargets(true);
+    }).finally(() => setInitBusy(false));
+  };
 
   // sync state follows the SELECTED target volume; fully-synced playlists on
   // that volume start checked (selection = desired stick state). Switching
@@ -640,6 +661,8 @@ export function SyncWizard({ onClose }: { onClose: () => void }) {
 
   const target = targets.find(t => t.volume === vol);
   const fits = plan && target && plan.total_bytes < target.free_bytes;
+  const device = target?.device;
+  const deviceReady = !device || device.can_sync;
   const toggle = (id: string) =>
     setPicked(s2 => { const n = new Set(s2); n.has(id) ? n.delete(id) : n.add(id); return n; });
 
@@ -728,6 +751,31 @@ export function SyncWizard({ onClose }: { onClose: () => void }) {
               ))}
             </select>
           </div>
+          {device && device.state !== "ready" && (
+            <div className="wizinit" data-testid="device-init">
+              <div className="wizinit-h">
+                {device.state === "empty" && "This drive has not been prepared for Pioneer players"}
+                {device.state === "incomplete" && "This drive is missing files a prepared device has"}
+                {device.state === "unsupported" && "This drive cannot be read by Pioneer players"}
+              </div>
+              {device.notes?.map((n: string, i: number) => (
+                <div key={i} className="wizinit-n">{n}</div>
+              ))}
+              {device.missing?.length > 0 && (
+                <div className="wizinit-n">
+                  missing: {device.missing.slice(0, 6).join(", ")}
+                  {device.missing.length > 6 ? ` and ${device.missing.length - 6} more` : ""}
+                </div>
+              )}
+              {device.can_initialize && (
+                <button className="syncbtn" disabled={initBusy} onClick={initialize}
+                        data-testid="device-init-go">
+                  {initBusy ? "Initializing…" : "Initialize this drive"}
+                </button>
+              )}
+              {initErr && <div className="wizinit-n" style={{ color: "#e5484d" }}>{initErr}</div>}
+            </div>
+          )}
           <div className="lbl" style={{ margin: "10px 0 6px" }}>Playlists to sync</div>
           <div className="wizlist">
             {kidsOf(null).map(p => renderNode(p, 0))}
@@ -744,7 +792,7 @@ export function SyncWizard({ onClose }: { onClose: () => void }) {
                 {!fits && " — doesn't fit, trim the selection"}
               </span>
             ) : <span className="ta">pick playlists to size the sync</span>}
-            <button className="wizgo" disabled={!plan || !fits || picked.size === 0}
+            <button className="wizgo" disabled={!plan || !fits || picked.size === 0 || !deviceReady}
               onClick={() => setStep(2)}>Review →</button>
           </div>
         </>)}

@@ -355,3 +355,15 @@ body {
   border-radius: 8px; padding: 8px 10px; }
 .sdrow { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .sdvol { font-size: 12.5px; font-weight: 600; color: var(--ink); }
+
+/* Drive not yet prepared for Pioneer players — shown above the playlist
+   picker, with the one action that fixes it. */
+.wizinit {
+  margin: 10px 0 2px; padding: 10px 12px;
+  border: 1px solid var(--amber, #b7791f); border-radius: 6px;
+  background: color-mix(in srgb, var(--amber, #b7791f) 10%, transparent);
+  display: flex; flex-direction: column; gap: 6px;
+}
+.wizinit-h { font-size: 12.5px; font-weight: 600; }
+.wizinit-n { font-size: 11.5px; color: var(--ink2); line-height: 1.45; }
+.wizinit .syncbtn { align-self: flex-start; margin-top: 2px; }
