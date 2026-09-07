@@ -63,23 +63,29 @@ def stick_tracks(rb: Path) -> dict[str, int]:
     return {str(p.track(ro)["u14"]): p.track(ro)["id"] for ro, _ in p.rows(P.T_TRACKS)}
 
 
-def main(argv: list[str]) -> int:
-    apply = "--apply" in argv
-    vols = [a for a in argv if a.startswith("/")]
-    if not vols:
-        raise SystemExit(__doc__)
-    vol = Path(vols[0])
+def run(vol: Path, apply: bool = False) -> dict:
+    """Do the work and return what happened, so the UI can show it as
+    something other than a wall of log text."""
+    out: dict = {"volume": vol.name, "applied": apply, "ok": True,
+                 "steps": [], "notes": []}
+
+    def step(name, ok, detail):
+        out["steps"].append({"name": name, "ok": ok, "detail": detail})
+        if not ok:
+            out["ok"] = False
+
     rb = pioneer_dir(vol) / "rekordbox"
     library_db = HERE.parent / "library.db"
 
     ids = stick_tracks(rb)
-    print(f"{'APPLY' if apply else 'DRY-RUN'} — Matching for {vol.name}")
-    print(f"   {len(ids)} tracks on the stick")
+    out["tracks_on_stick"] = len(ids)
 
-    pairs = stick_pairs(library_db, list(ids), log=lambda m: print("   " + m))
+    pairs = stick_pairs(library_db, list(ids), log=out["notes"].append)
+    out["pairs"] = len(pairs)
+    out["tracks_matched"] = len({x for p in pairs for x in p[:2]})
     if not pairs:
-        print("   nothing to write")
-        return 0
+        out["notes"].append("no pairs to write for the tracks on this stick")
+        return out
 
     ms = int(datetime.datetime.now().timestamp() * 1000)
     ol_rows = [(ids[a], ids[b], None, ms) for a, b, _s in pairs
@@ -92,18 +98,17 @@ def main(argv: list[str]) -> int:
     lo, hi = ms & 0xFFFFFFFF, ms >> 32
     ext_rows = [W.serialize_matching(lo, hi, p, o)
                 for o in sorted(by_owner) for p in sorted(by_owner[o])]
-    print(f"   would write {len(ol_rows)} OneLibrary rows and "
-          f"{len(ext_rows)} legacy rows")
+    out["onelibrary_rows"] = len(ol_rows)
+    out["legacy_rows"] = len(ext_rows)
     if not apply:
-        print("\nDry run. Re-run with --apply (rekordbox closed).")
-        return 0
+        return out
 
     BACKUPS.mkdir(parents=True, exist_ok=True)
     stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
     for name in ("exportLibrary.db", "exportExt.pdb"):
         if (rb / name).exists():
             shutil.copy2(rb / name, BACKUPS / f"{name}.bak-{stamp}")
-    print(f"   backups -> {BACKUPS} (off the stick, on purpose)")
+    out["backups"] = str(BACKUPS)
 
     db = None
     if (rb / "exportLibrary.db").exists():
@@ -119,25 +124,48 @@ def main(argv: list[str]) -> int:
             db.commit()
             db.execute("PRAGMA wal_checkpoint(TRUNCATE)")
             db.close()
-            print(f"   exportLibrary.db: {len(ol_rows)} pairs")
+            step("exportLibrary.db", True,
+                 f"{len(ol_rows)} pairs — read by CDJ-3000, XDJ-AZ, OPUS")
         except Exception as e:                       # noqa: BLE001
-            print(f"   exportLibrary.db FAILED: {e}")
+            step("exportLibrary.db", False, str(e))
 
     ext = rb / "exportExt.pdb"
     if ext.exists():
-        out = W.build_pdb(ext, {0: ext_rows}, build_types={0},
-                          clone_types={1, 2, 3, 4, 5, 6, 7, 8}, shift_types=())
-        check = P.Pdb(out)
+        built = W.build_pdb(ext, {0: ext_rows}, build_types={0},
+                            clone_types={1, 2, 3, 4, 5, 6, 7, 8}, shift_types=())
+        check = P.Pdb(built)
         got = len(check.rows(0))
         if got != len(ext_rows):
-            print(f"   exportExt.pdb ABORTED: re-parse found {got} rows, "
-                  f"expected {len(ext_rows)} — stick left untouched")
-            return 1
-        ext.write_bytes(out)
-        print(f"   exportExt.pdb: {got} legacy rows, My Tags preserved "
-              f"({len(check.rows(3))} rows)")
-    print("\nDone. Eject cleanly, then test on the deck.")
-    return 0
+            step("exportExt.pdb", False,
+                 f"re-parse found {got} rows, expected {len(ext_rows)} — "
+                 f"stick left untouched")
+            return out
+        ext.write_bytes(built)
+        step("exportExt.pdb", True,
+             f"{got} rows — the table an XDJ-XZ reads. "
+             f"My Tags preserved ({len(check.rows(3))})")
+    return out
+
+
+def main(argv: list[str]) -> int:
+    """Command-line front end; the UI calls run() directly."""
+    apply = "--apply" in argv
+    vols = [a for a in argv if a.startswith("/")]
+    if not vols:
+        raise SystemExit(__doc__)
+    r = run(Path(vols[0]), apply)
+    print(f"{'APPLY' if apply else 'DRY-RUN'} — Matching for {r['volume']}")
+    print(f"   {r.get('tracks_on_stick', 0)} tracks on the stick")
+    for n in r["notes"]:
+        print(f"   {n}")
+    if "onelibrary_rows" in r:
+        print(f"   {r['onelibrary_rows']} OneLibrary rows, "
+              f"{r['legacy_rows']} legacy rows")
+    for s in r["steps"]:
+        print(f"   {'OK  ' if s['ok'] else 'FAIL'} {s['name']}: {s['detail']}")
+    if not apply and r.get("pairs"):
+        print("\nDry run. Re-run with --apply (rekordbox closed).")
+    return 0 if r["ok"] else 1
 
 
 if __name__ == "__main__":

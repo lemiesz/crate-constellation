@@ -334,37 +334,61 @@ export function UsbView({ onOpen }: { onOpen: (id: string) => void }) {
     );
   };
 
-  const fmtResults = (d: any) =>
-    (d.results ?? []).map((r: any) =>
-      `── ${r.script} — ${r.ok ? "OK" : "FAILED"}\n${r.hint ? `▲ ${r.hint}\n` : ""}${r.log}`
-    ).join("\n") || d.detail || JSON.stringify(d);
+  const [match, setMatch] = useState<any>(null);
 
   const patch = async () => {
-    setBusy(true); setLog(null);
+    setBusy(true); setLog(null); setMatch(null);
     try {
       const dry = await (await fetch("/api/usb/patch-matching", {
         method: "POST", headers: { "content-type": "application/json" }, body: "{}",
       })).json();
-      if (!dry.results) { setLog(fmtResults(dry)); setBusy(false); return; }
-      setLog(fmtResults(dry));
-      const okScripts = dry.results.filter((r: any) => r.ok);
-      if (okScripts.length === 0) { setBusy(false); return; }
-      const summary = dry.results.map((r: any) =>
-        `${r.script}: ${r.ok
-          ? r.log.split("\n").filter((x: string) => x.includes("will write") || x.includes("pairs")).join(" ")
-          : "SKIPPED — " + (r.hint ?? "dry run failed")}`).join("\n\n");
-      if (!window.confirm(`Dry run:\n\n${summary}\n\nApply the parts that passed? (backs up first — don't sync rekordbox meanwhile)`)) {
+      if (dry.detail) { setLog(dry.detail); setBusy(false); return; }
+      setMatch(dry);
+      if (!dry.pairs) { setBusy(false); return; }
+      if (!window.confirm(
+        `Write ${dry.pairs} matching pairs for the ${dry.tracks_on_stick} tracks `
+        + `on ${dry.volume}?\n\n${dry.tracks_matched} of them get at least one match.\n\n`
+        + `Both tables are written and the originals are backed up off the drive. `
+        + `Don't let rekordbox sync this drive meanwhile.`)) {
         setBusy(false); return;
       }
       const res = await (await fetch("/api/usb/patch-matching", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ apply: true }),
       })).json();
-      setLog(fmtResults(res));
+      setMatch(res);
       fetch("/api/usb/status").then(r => r.json()).then(setSt);
     } catch (e) { setLog(String(e)); }
     setBusy(false);
   };
+
+  const matchPanel = match && (
+    <div className="mpanel" data-testid="match-result">
+      <div className="mrow">
+        <span className="mk">{match.applied ? "Written to" : "Ready for"}</span>
+        <b>{match.volume}</b>
+      </div>
+      <div className="mstats">
+        <div><b>{(match.tracks_on_stick ?? 0).toLocaleString()}</b><span>tracks on the drive</span></div>
+        <div><b>{(match.pairs ?? 0).toLocaleString()}</b><span>matching pairs</span></div>
+        <div><b>{(match.tracks_matched ?? 0).toLocaleString()}</b><span>tracks with a match</span></div>
+      </div>
+      {(match.steps ?? []).map((s: any, i: number) => (
+        <div key={i} className={"mstep " + (s.ok ? "ok" : "bad")}>
+          <span>{s.ok ? "✓" : "✕"}</span>
+          <b>{s.name}</b>
+          <span className="md">{s.detail}</span>
+        </div>
+      ))}
+      {!match.applied && match.pairs > 0 && (
+        <div className="md">Nothing written yet — this was the dry run.</div>
+      )}
+      {(match.notes ?? []).map((n: string, i: number) => (
+        <div key={"n" + i} className="md">{n}</div>
+      ))}
+      {match.backups && <div className="md">Originals backed up to {match.backups}</div>}
+    </div>
+  );
 
   const [wizard, setWizard] = useState(false);
   const [settings, setSettings] = useState(false);
@@ -461,6 +485,7 @@ export function UsbView({ onOpen }: { onOpen: (id: string) => void }) {
           ))}
           {rows.length === 0 && <div className="empty">nothing here</div>}
         </div>
+        {matchPanel}
         {log && <pre className="patchlog">{log}</pre>}
       </div>
       </div>

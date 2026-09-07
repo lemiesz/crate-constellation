@@ -156,6 +156,21 @@ job log prints per-step timings and effective MB/s — if a sync is slow,
 read the log before optimizing. A SanDisk Extreme Pro-class stick would be
 ~10× faster. On gig day none of this matters: decks read at USB-2 rates.
 
+## Matching
+
+Computed over the tracks on the device, not filtered from a library-wide set:
+filtering leaves a partial sync with almost nothing, since it keeps only pairs
+whose partner happens to be aboard. `engine/matching.py` reuses the library
+builder's rules exactly. Written to both tables — `recommendedLike` in the
+OneLibrary for the newer players, and `exportExt.pdb`'s type-0 table, which is
+the one an XDJ-XZ reads.
+
+For a stick we did not build, `python -m engine.push_matching /Volumes/NAME`
+does the same thing after the fact, `--apply` to write. It replaces the two
+scripts in `library-management/`, whose legacy half could only clone an
+existing populated page and so aborted on every fresh export. The USB screen's
+button calls the same code.
+
 ## Known gaps (future work, in rough order)
 
 1. **Hot/memory cues on deck** — rekordbox materializes `djmdCue` into the

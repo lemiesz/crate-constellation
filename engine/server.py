@@ -413,32 +413,25 @@ def usb_tracks(filter: str = "missing", query: str = "", playlist: str = ""):
 
 @app.post("/api/usb/patch-matching")
 def usb_patch_matching(body: dict = Body(default={})):
-    """Phase A sync: push the Matching set to the stick via the deck-verified
-    scripts (OneLibrary + legacy exportExt.pdb), backup-first. Dry-run unless
-    body.apply is true."""
-    import subprocess
-    import sys as _sys
+    """Push Matching onto the mounted stick. Dry-run unless body.apply.
+
+    This used to shell out to the two scripts in library-management/. The
+    legacy one could only clone an existing populated page, so it aborted on
+    any stick whose Matching table was empty, which is every fresh export --
+    exactly the sticks you most want to patch. engine.push_matching
+    synthesizes the page instead, computes the pairs over the tracks actually
+    on the stick, and writes both tables in one pass.
+    """
+    from . import push_matching
     vol = usbmod.find_stick()
     if not vol:
         raise HTTPException(404, "no rekordbox stick mounted")
-    apply_flag = ["--apply"] if body.get("apply") else []
-    lm = Path.home() / "Music/library-management"
-    results = []
-    for script in ("push_matching_to_usb.py", "push_matching_legacy.py"):
-        r = subprocess.run([_sys.executable, str(lm / script), str(vol)] + apply_flag,
-                           capture_output=True, text=True, timeout=600, cwd=lm)
-        log = (r.stdout + r.stderr)[-2000:]
-        hint = None
-        if r.returncode != 0 and "no full data page found" in log:
-            hint = ("The stick's exportExt.pdb matching table is empty — the "
-                    "deck-verified writer templates an existing page and cannot "
-                    "synthesize the first one (gated PDB work). One rekordbox "
-                    "device-sync will seed it; re-run the patch afterwards.")
-        results.append({"script": script, "ok": r.returncode == 0,
-                        "log": log, "hint": hint})
+    try:
+        result = push_matching.run(vol, apply=bool(body.get("apply")))
+    except Exception as e:                           # noqa: BLE001
+        raise HTTPException(500, f"{type(e).__name__}: {e}")
     usbmod._cache.clear()
-    return {"ok": all(x["ok"] for x in results),
-            "applied": bool(body.get("apply")), "results": results}
+    return result
 
 
 # --- USB sync wizard ----------------------------------------------------
