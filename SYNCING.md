@@ -171,13 +171,19 @@ scripts in `library-management/`, whose legacy half could only clone an
 existing populated page and so aborted on every fresh export. The USB screen's
 button calls the same code.
 
+## Cues
+
+Written by `engine/cues.py` during the analysis pass. rekordbox keeps cues in
+its database and only materializes them at export, so the analysis files we
+copy have empty containers; the mirror in `library.db` (filled by the
+importer) is what we write from. All six containers per track, validated
+byte-identical against a real rekordbox export across 24 containers. Loops are
+not written — the encoding is unconfirmed and this library has none. Full
+format notes in `docs/ANLZ-FORMAT.md`.
+
 ## Known gaps (future work, in rough order)
 
-1. **Hot/memory cues on deck** — rekordbox materializes `djmdCue` into the
-   stick ANLZ's PCOB/PCO2 tags at export; our sticks currently carry
-   waveforms + grids but empty cue slots. Reference bytes for the format
-   are in `pdb-corpus/fresh-export/USBANLZ/`.
-2. **My Tags on deck** — exportExt type-3 row format is documented
+1. **My Tags on deck** — exportExt type-3 row format is documented
    (fragmede FORMAT.md); write our 4 banks instead of the default set.
 3. **Matching** — exportExt type-0 rows (24 bytes, format known and
    deck-verified via the old patch scripts) from our similarity engine.
