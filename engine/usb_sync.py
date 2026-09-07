@@ -33,6 +33,34 @@ DLP_KEY = "r8gddnr4k847830ar6cqzbkk0el6qytmb3trbbx805jm74vez64i5o8fnrqryqls"
 from .usb import EXCLUDE_VOLUMES
 FILETYPE = {".mp3": 1, ".m4a": 4, ".aac": 4, ".flac": 5, ".wav": 11, ".aiff": 12, ".aif": 12}
 
+# Bookkeeping constants rekordbox stamps on every exported track.  Both are
+# copied from a rekordbox-written export (pdb-corpus/fresh-export); leaving
+# them NULL is one of the deviations that made rekordbox call our device
+# libraries corrupt.  analysedBits = which analysis data exists (41 is what
+# rekordbox writes for a normally analysed track); contentLink is a constant
+# stamp, 788224 across every fresh export we have.
+ANALYSED_BITS = 41
+CONTENT_LINK = 788224
+
+
+def audio_props(path: str | None) -> tuple[int, int, int]:
+    """(bitrate kbps, bit depth, sample rate) read from the file itself.
+    rekordbox always fills these; we used to write zeros."""
+    if not path:
+        return 0, 16, 44100
+    try:
+        import mutagen
+        f = mutagen.File(path)
+        info = getattr(f, "info", None)
+        if info is None:
+            return 0, 16, 44100
+        br = int(getattr(info, "bitrate", 0) or 0) // 1000
+        depth = int(getattr(info, "bits_per_sample", 0) or 16)
+        srate = int(getattr(info, "sample_rate", 0) or 44100)
+        return br, depth, srate
+    except Exception:
+        return 0, 16, 44100
+
 JOBS: dict[str, dict] = {}          # volume -> job (one live job per drive)
 
 
@@ -106,17 +134,27 @@ def dismiss(volume: str) -> dict:
     return {"dismissed": True}
 
 
+def manifest_path(vol: Path) -> Path:
+    """Our own sync manifest, one level ABOVE the rekordbox directory.
+
+    That directory must contain rekordbox's own files and nothing else — a
+    foreign file sitting next to export.pdb is exactly the kind of thing
+    rekordbox's device scan trips over.  Older sticks kept it inside; the
+    reader still accepts that location."""
+    return vol / target_pioneer_name(vol) / "crate-sync.json"
+
+
 def read_manifest(vol: Path) -> dict | None:
     """The crate-sync.json a sync leaves on the stick (what/when we synced)."""
     import json
     pname = target_pioneer_name(vol)
-    f = vol / pname / "rekordbox" / "crate-sync.json"
-    if not f.exists():
-        return None
-    try:
-        return json.loads(f.read_text())
-    except Exception:
-        return None
+    for f in (manifest_path(vol), vol / pname / "rekordbox" / "crate-sync.json"):
+        if f.exists():
+            try:
+                return json.loads(f.read_text())
+            except Exception:
+                return None
+    return None
 
 
 def extract_art(path: str) -> bytes | None:
@@ -304,25 +342,34 @@ def _build_onelibrary(dst: Path, tracks: list[dict], nodes: list[dict],
     today = date.today().isoformat()
     for i, t in enumerate(tracks, start=1):
         ext = Path(t["path"] or "").suffix.lower()
+        # Column fidelity matters: rekordbox refuses a device whose OneLibrary
+        # deviates from what it writes itself.  Two rules, both measured
+        # against real exports (engine/diff_onelibrary.py):
+        #   * absent lookups are NULL, never 0 — rekordbox uses 0 only for
+        #     color_id and artist_id_lyricist; a 0 in album/genre/label/image
+        #     is a dangling foreign key it never produces.
+        #   * columns rekordbox always populates must be populated.
+        br, depth, srate = audio_props(t["path"])
         db.execute(
             "INSERT INTO content (content_id, title, subtitle, bpmx100, length, trackNo, "
-            "discNo, artist_id_artist, album_id, genre_id, label_id, key_id, color_id, "
-            "image_id, djComment, rating, releaseYear, dateCreated, dateAdded, path, "
-            "fileName, fileSize, fileType, bitrate, bitDepth, samplingRate, djPlayCount, "
-            "isHotCueAutoLoadOn, masterDbId, masterContentId, analysisDataFilePath, "
-            "hasModified, cueUpdateCount, analysisDataUpdateCount, informationUpdateCount) "
-            "VALUES (?,?,?,?,?,1,1,?,?,0,?,?,0,0,?,?,?,?,?,?,?,?,?,0,0,0,0,1,?,?,?,0,0,0,0)",
+            "discNo, artist_id_artist, artist_id_lyricist, album_id, genre_id, label_id, "
+            "key_id, color_id, image_id, djComment, rating, releaseYear, releaseDate, "
+            "dateCreated, dateAdded, path, fileName, fileSize, fileType, bitrate, "
+            "bitDepth, samplingRate, isrc, djPlayCount, isHotCueAutoLoadOn, "
+            "isKuvoDeliverStatusOn, kuvoDeliveryComment, masterDbId, masterContentId, "
+            "analysisDataFilePath, analysedBits, contentLink, hasModified, "
+            "cueUpdateCount, analysisDataUpdateCount, informationUpdateCount) "
+            "VALUES (?,?,?,?,?,1,1,?,0,?,?,?,?,0,?,?,?,?,'',?,?,?,?,?,?,?,?,?,'',0,1,"
+            "1,'',?,?,?,?,?,0,NULL,NULL,NULL)",
             (i, t["title"] or Path(t["path"] or "x").stem, "",
              int(round((t["bpm"] or 0) * 100)), int(t["length"] or 0),
-             artists.get(t["artist"], 0), albums.get(t["album"], 0),
-             labels.get(t["label"], 0), keys.get(t["key"], 0),
+             artists.get(t["artist"]) or None, albums.get(t["album"]) or None,
+             None, labels.get(t["label"]) or None, keys.get(t["key"]) or None,
+             t.get("image_id") or None,
              t["comment"] or "", t["rating"] or 0, t["year"],
              today, today, t["stick_path"], Path(t["path"]).name,
-             t["size"] or 0, FILETYPE.get(ext, 0),
-             2090934051, int(t["id"]), t["stick_anlz"]))
-        if t.get("image_id"):
-            db.execute("UPDATE content SET image_id = ? WHERE content_id = ?",
-                       (t["image_id"], i))
+             t["size"] or 0, FILETYPE.get(ext, 0), br, depth, srate,
+             2090934051, int(t["id"]), t["stick_anlz"], ANALYSED_BITS, CONTENT_LINK))
         t["content_id"] = i
 
     cid_of = {t["id"]: t["content_id"] for t in tracks}
@@ -335,8 +382,9 @@ def _build_onelibrary(dst: Path, tracks: list[dict], nodes: list[dict],
             if tid in cid_of:
                 db.execute("INSERT INTO playlist_content VALUES (?,?,?)",
                            (nd["sid"], cid_of[tid], seq))
-    for iid, ipath in (images or []):
-        db.execute("INSERT INTO image (image_id, path) VALUES (?,?)", (iid, ipath))
+    for iid, _apath, bpath in (images or []):
+        # OneLibrary references the 240px b-file; export.pdb references the a-file
+        db.execute("INSERT INTO image (image_id, path) VALUES (?,?)", (iid, bpath))
 
     # My Tags: 4 banks + child tags + links
     try:
@@ -476,10 +524,15 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         log(f"analysis copied for {copied} tracks (ANLZ dirs at Pioneer hash paths)")
         mark("analysis files")
 
-        # 2b) album art, deck-normalized like rekordbox: square baseline JPEGs
-        # at /<pname>/Artwork/00001/aN.jpg (80px) + aN_m.jpg (240px — what the
-        # XZ-class screens actually request). Raw embedded art at arbitrary
-        # sizes renders as NO art on the deck.
+        # 2b) album art, deck-normalized like rekordbox: square baseline JPEGs.
+        # A real export writes TWO files per cover and references them from
+        # DIFFERENT databases — measured from a rekordbox-written export:
+        #     aN.jpg  80x80   <- export.pdb artwork rows (legacy players: XZ)
+        #     bN.jpg  240x240 <- exportLibrary.db image.path (OneLibrary decks)
+        # We used to write "aN_m.jpg", a name rekordbox never produces, and
+        # pointed both databases at the 80px file.  Raw embedded art at
+        # arbitrary sizes renders as NO art on the deck, so both files are
+        # center-cropped square baseline JPEGs.
         job["step"] = "album art"
         from .heal import cached_deck_art, deck_jpegs
         art_ids: dict = {}
@@ -502,15 +555,17 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
                 jpg80, jpg240 = norm
             if h not in art_ids:
                 aid = len(art_ids) + 1
-                apath = f"/{pname}/Artwork/00001/a{aid}.jpg"
+                apath = f"/{pname}/Artwork/00001/a{aid}.jpg"   # legacy / pdb
+                bpath = f"/{pname}/Artwork/00001/b{aid}.jpg"   # OneLibrary
                 art_dir.mkdir(parents=True, exist_ok=True)
                 (vol / apath.lstrip("/")).write_bytes(jpg80)
-                (art_dir / f"a{aid}_m.jpg").write_bytes(jpg240)
-                art_ids[h] = (aid, apath)
-                images.append((aid, apath))
+                (vol / bpath.lstrip("/")).write_bytes(jpg240)
+                (art_dir / f"a{aid}_m.jpg").unlink(missing_ok=True)   # our old name
+                art_ids[h] = (aid, apath, bpath)
+                images.append((aid, apath, bpath))
             t["artwork_id"] = t["image_id"] = art_ids[h][0]
         log(f"album art: {len(images)} unique covers "
-            f"(80px + 240px _m variants, deck-normalized) for "
+            f"(80px aN.jpg for the pdb + 240px bN.jpg for OneLibrary) for "
             f"{sum(1 for t in tracks if t.get('artwork_id'))} tracks")
         mark("album art")
 
@@ -553,7 +608,8 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
                 "tempo": int(round((t["bpm"] or 0) * 100)),
                 "duration": int(t["length"] or 0), "year": t["year"],
                 "rating": t["rating"] or 0,
-                "bitrate": int((t["size"] or 0) * 8 / (t["length"] or 1) / 1000),
+                "bitrate": audio_props(t["path"])[0]
+                           or int((t["size"] or 0) * 8 / (t["length"] or 1) / 1000),
                 "filetype": {"mp3": 1, "m4a": 4, "aac": 4, "flac": 5, "wav": 11,
                              "aiff": 12, "aif": 12}.get(
                                  Path(t["path"]).suffix.lower().lstrip("."), 1),
@@ -577,7 +633,7 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
             4: [W.serialize_label(i, n) for n, i in sorted(maps["labels"].items(), key=lambda x: x[1])],
             5: [W.serialize_key(i, n) for n, i in sorted(maps["keys"].items(), key=lambda x: x[1])],
             7: tree_rows, 8: entry_rows,
-            13: [W.serialize_artwork(aid, apath) for aid, apath in images],
+            13: [W.serialize_artwork(aid, apath) for aid, apath, _b in images],
         }
         tpl = CORPUS / "deck-verified/rekordbox/export.pdb"
         if not tpl.exists():
@@ -616,6 +672,30 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
             assert g["file_size"] == (t["size"] or 0)
         log(f"export.pdb verified: {vt} tracks, {vp} playlists, {ve} entries re-parse clean")
 
+        # structural gate: the deck reads a pdb permissively, rekordbox opens
+        # it with a full DeviceSQL engine and rejects free-page bookkeeping it
+        # would not have written itself ("device library is corrupted").
+        from .verify_pdb import verify, verify_file
+        for label, problems in (("export.pdb", verify(pdb_bytes)),
+                                ("exportExt.pdb", verify_file(rb_dir / "exportExt.pdb"))):
+            if problems:
+                raise AssertionError(
+                    f"{label} failed structural validation: " + "; ".join(problems[:5]))
+        log("export.pdb + exportExt.pdb pass structural validation "
+            "(page chains, spare pages, byte accounting)")
+
+        # and the same for the OneLibrary: rekordbox refuses a device whose
+        # database deviates from the shape it writes itself
+        try:
+            from .diff_onelibrary import _open, dangling
+            odb = _open(rb_dir / "exportLibrary.db")
+            od = dangling(odb)
+            if od:
+                raise AssertionError("exportLibrary.db: " + "; ".join(od[:5]))
+            log("exportLibrary.db verified: no dangling references")
+        except ImportError:
+            pass
+
         # 4) player settings from the corpus
         job["step"] = "player settings"
         settings_src = FRESH if (FRESH / "MYSETTING.DAT").exists() else CORPUS
@@ -629,10 +709,11 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         if not alive():
             return
         # manifest: lets the drive settings page repair/re-sync without
-        # re-picking playlists (crate-sync.json rides next to the DBs)
+        # re-picking playlists (kept OUT of the rekordbox directory)
         import json as _json
         from datetime import datetime, timezone
-        (rb_dir / "crate-sync.json").write_text(_json.dumps({
+        (rb_dir / "crate-sync.json").unlink(missing_ok=True)   # legacy location
+        manifest_path(vol).write_text(_json.dumps({
             "tool": "crate-constellation",
             "volume": vol.name,
             "synced_at": datetime.now(tz=timezone.utc).isoformat(),

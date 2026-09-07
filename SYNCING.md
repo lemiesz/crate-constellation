@@ -25,10 +25,10 @@ shows the full library view — playlists, browse, search — on the XDJ-XZ.
 | `/PIONEER` or `/.PIONEER` | **FAT32 → plain name; HFS+ → dot-hidden.** Wrong name = deck silently folder-views. DB-internal paths carry the same prefix. |
 | `…/rekordbox/export.pdb` | built from scratch by `engine/pdb_writer.py` — the XZ's database |
 | `…/rekordbox/exportExt.pdb` | verbatim copy of a known-good fresh export (My Tag defaults; not required for library view but a corrupt one can break the deck) |
-| `…/rekordbox/exportLibrary.db` | OneLibrary (CDJ-3000-class players), built locally then copied once — never build SQLite directly on a slow stick |
+| `…/rekordbox/exportLibrary.db` | OneLibrary (CDJ-3000-class players), built locally then copied once — never build SQLite directly on a slow stick. Column fidelity is load-bearing; see *Why rekordbox accepts the device* below. |
 | `…/USBANLZ/P{xxx}/{hash}/ANLZ0000.*` | waveforms/grids copied from rekordbox's local analysis, **placed at Pioneer's hash-computed path** (players ignore the DB's analyze_path and recompute the hash), PPTH path byte-spliced + null-terminated |
-| `…/Artwork/00001/aN.jpg` + `aN_m.jpg` | covers **deck-normalized**: square center-crop, 80px + 240px `_m` variant, baseline JPEG — exactly rekordbox's own cache sizes. Raw embedded art at arbitrary sizes silently renders as NO art on the deck. Served from `art-cache/<sha1>_80/_240.jpg` (precomputed, deduped by content). |
-| `…/rekordbox/crate-sync.json` | sync manifest (playlists, counts, timestamp) — powers Drive settings repair/re-sync without re-picking playlists |
+| `…/Artwork/00001/aN.jpg` + `bN.jpg` | covers **deck-normalized**: square center-crop, baseline JPEG. Two files per cover, and the two databases point at different ones — `aN.jpg` (80px) from `export.pdb`'s artwork rows, `bN.jpg` (240px) from `exportLibrary.db`'s `image.path`. Both names are measured from a real export; we previously invented `aN_m.jpg`, which rekordbox never writes. Raw embedded art at arbitrary sizes silently renders as NO art on the deck. Served from `art-cache/<sha1>_80/_240.jpg` (precomputed, deduped by content). |
+| `…/crate-sync.json` | sync manifest (playlists, counts, timestamp) — powers Drive settings repair/re-sync without re-picking playlists. Lives one level **above** `rekordbox/`: that directory holds rekordbox's own files and nothing else. |
 | settings, `extracted/gcred.dat` | cloned from the reference export |
 
 ## Drive settings (USB screen → Drive settings…)
@@ -70,6 +70,47 @@ project memory `pdb-writer.md` and `pdb-corpus/` references):
 - every table's `last_page.next_page == empty_candidate`; head-only tables
   point at their own zeroed even page
 
+## Why rekordbox accepts the device
+
+The deck and the desktop judge a stick differently, and this is the single
+most confusing thing about the format. A player reads a database
+permissively — it walks the table chains and takes what it finds. rekordbox
+opens the same files with a full DeviceSQL engine because it intends to
+*write* to them on the next export, so it validates bookkeeping the deck
+never looks at. A stick can therefore play perfectly on the XZ and still be
+refused on the desktop with "device library is corrupted".
+
+Two harnesses encode what we have measured, and the sync runs both on every
+file it writes:
+
+- **`engine/verify_pdb.py`** — structural checks on `export.pdb` /
+  `exportExt.pdb`: no page belongs to two table chains; every table has its
+  own all-zero spare page that is not inside another chain; each chain
+  terminates with `next_page == empty_candidate`; `next_unused_page` exceeds
+  every spare; and per-page `free_size` matches
+  `4096 − 40 − effective_footer − used_size`, where the footer counts a
+  partial row group as `2 × rows + 4` rather than a full 36-byte block.
+- **`engine/diff_onelibrary.py`** — profiles `exportLibrary.db` against
+  rekordbox-written references and reports deviations.
+
+Two rules about the OneLibrary, both measured, both violated by our writer
+until 2026-09-07:
+
+- **Absent lookups are `NULL`, never `0`.** rekordbox uses `0` as a "none"
+  sentinel for exactly two columns, `color_id` and `artist_id_lyricist`.
+  A `0` in `album_id` / `genre_id` / `label_id` / `image_id` is a reference
+  to a row that does not exist, which no real export contains.
+- **Columns rekordbox always fills must be filled**: `analysedBits` (41),
+  `contentLink` (788224), `isrc`, `releaseDate`, `kuvoDeliveryComment`,
+  `isKuvoDeliverStatusOn`, `artist_id_lyricist`. We left every one of them
+  NULL. `bitrate` / `bitDepth` / `samplingRate` now come from the audio file
+  itself instead of being written as zero.
+
+One check that looks tempting and is **wrong**: the row-count word at
+`0x19` equals `0x20 × rows` only on a page written in a single save.
+rekordbox's own exports violate it on any page that has ever seen a
+deletion, so asserting it flags real, deck-accepted files as broken.
+
 ## The corpus (do not delete)
 
 `pdb-corpus/` holds the irreplaceable references:
@@ -97,14 +138,15 @@ read the log before optimizing. A SanDisk Extreme Pro-class stick would be
    stick ANLZ's PCOB/PCO2 tags at export; our sticks currently carry
    waveforms + grids but empty cue slots. Reference bytes for the format
    are in `pdb-corpus/fresh-export/USBANLZ/`.
-2. **Playlist folders** — wizard writes a flat playlist list (tree rows
-   support folders; wire the library's folder hierarchy through).
-3. **My Tags on deck** — exportExt type-3 row format is documented
+2. **My Tags on deck** — exportExt type-3 row format is documented
    (fragmede FORMAT.md); write our 4 banks instead of the default set.
-4. **Matching** — exportExt type-0 rows (24 bytes, format known and
+3. **Matching** — exportExt type-0 rows (24 bytes, format known and
    deck-verified via the old patch scripts) from our similarity engine.
-5. FAT32 formatting from the wizard, incremental (non-wipe) DB updates.
-   (Artwork: done — deck-normalized 80/240 variants since 2026-09-07.)
+4. FAT32 formatting from the wizard, incremental (non-wipe) DB updates.
+
+Done since this list was first written: playlist folders, artwork (both the
+`aN`/`bN` variants and the deck normalization), and OneLibrary column
+fidelity.
 
 ## External references
 
