@@ -43,6 +43,16 @@ ANALYSED_BITS = 41
 CONTENT_LINK = 788224
 
 
+def art_bucket(artwork_id: int) -> str:
+    """Artwork directory for an id: rekordbox shards 20 covers per bucket.
+
+    Verified against a rekordbox-written export: 11,485 artwork rows, ids 1
+    to 11,485, buckets 00001 to 00575, zero violations.  Every third-party
+    writer flattens everything into 00001, which is right only while a stick
+    holds fewer than twenty distinct covers."""
+    return f"{artwork_id // 20 + 1:05d}"
+
+
 def audio_props(path: str | None) -> tuple[int, int, int]:
     """(bitrate kbps, bit depth, sample rate) read from the file itself.
     rekordbox always fills these; we used to write zeros."""
@@ -383,7 +393,8 @@ def _build_onelibrary(dst: Path, tracks: list[dict], nodes: list[dict],
                 db.execute("INSERT INTO playlist_content VALUES (?,?,?)",
                            (nd["sid"], cid_of[tid], seq))
     for iid, _apath, bpath in (images or []):
-        # OneLibrary references the 240px b-file; export.pdb references the a-file
+        # the two databases reference twin files: export.pdb the a-file,
+        # OneLibrary the b-file.  Neither stores the _m high-res path.
         db.execute("INSERT INTO image (image_id, path) VALUES (?,?)", (iid, bpath))
 
     # My Tags: 4 banks + child tags + links
@@ -524,20 +535,25 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         log(f"analysis copied for {copied} tracks (ANLZ dirs at Pioneer hash paths)")
         mark("analysis files")
 
-        # 2b) album art, deck-normalized like rekordbox: square baseline JPEGs.
-        # A real export writes TWO files per cover and references them from
-        # DIFFERENT databases — measured from a rekordbox-written export:
-        #     aN.jpg  80x80   <- export.pdb artwork rows (legacy players: XZ)
-        #     bN.jpg  240x240 <- exportLibrary.db image.path (OneLibrary decks)
-        # We used to write "aN_m.jpg", a name rekordbox never produces, and
-        # pointed both databases at the 80px file.  Raw embedded art at
-        # arbitrary sizes renders as NO art on the deck, so both files are
-        # center-cropped square baseline JPEGs.
+        # 2b) album art, laid out exactly as rekordbox lays it out.  Four
+        # files per cover, in a bucket directory, all square baseline JPEGs:
+        #
+        #     <bucket>/aN.jpg    80px   <- export.pdb artwork row (legacy: XZ)
+        #     <bucket>/aN_m.jpg  240px  <- derived by the player, never stored
+        #     <bucket>/bN.jpg    80px   <- exportLibrary.db image.path
+        #     <bucket>/bN_m.jpg  240px  <- derived by the player, never stored
+        #
+        # Neither database ever stores an "_m" path.  A player that wants the
+        # high-resolution variant takes the path it was given and inserts _m
+        # before the extension, so those files must exist under exactly that
+        # name or the large art silently resolves to nothing.  The b-files are
+        # byte-identical twins of the a-files; only the referencing database
+        # differs.  Raw embedded art at arbitrary sizes renders as no art at
+        # all, hence the square center-crop and the fixed sizes.
         job["step"] = "album art"
         from .heal import cached_deck_art, deck_jpegs
         art_ids: dict = {}
         images: list[tuple] = []
-        art_dir = vol / pname / "Artwork/00001"
         cache = cached_deck_art(library_db, [t["id"] for t in tracks])
         for t in tracks:
             if not alive():
@@ -555,17 +571,20 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
                 jpg80, jpg240 = norm
             if h not in art_ids:
                 aid = len(art_ids) + 1
-                apath = f"/{pname}/Artwork/00001/a{aid}.jpg"   # legacy / pdb
-                bpath = f"/{pname}/Artwork/00001/b{aid}.jpg"   # OneLibrary
-                art_dir.mkdir(parents=True, exist_ok=True)
-                (vol / apath.lstrip("/")).write_bytes(jpg80)
-                (vol / bpath.lstrip("/")).write_bytes(jpg240)
-                (art_dir / f"a{aid}_m.jpg").unlink(missing_ok=True)   # our old name
+                bucket = art_bucket(aid)
+                adir = vol / pname.lstrip("/") / "Artwork" / bucket
+                adir.mkdir(parents=True, exist_ok=True)
+                apath = f"/{pname}/Artwork/{bucket}/a{aid}.jpg"   # legacy / pdb
+                bpath = f"/{pname}/Artwork/{bucket}/b{aid}.jpg"   # OneLibrary
+                for stem, blob in ((f"a{aid}", jpg80), (f"a{aid}_m", jpg240),
+                                   (f"b{aid}", jpg80), (f"b{aid}_m", jpg240)):
+                    (adir / f"{stem}.jpg").write_bytes(blob)
                 art_ids[h] = (aid, apath, bpath)
                 images.append((aid, apath, bpath))
             t["artwork_id"] = t["image_id"] = art_ids[h][0]
-        log(f"album art: {len(images)} unique covers "
-            f"(80px aN.jpg for the pdb + 240px bN.jpg for OneLibrary) for "
+        log(f"album art: {len(images)} unique covers across "
+            f"{len({art_bucket(i) for i, _a, _b in images})} bucket(s), "
+            f"80px + 240px _m variants, for "
             f"{sum(1 for t in tracks if t.get('artwork_id'))} tracks")
         mark("album art")
 
@@ -695,6 +714,23 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
             log("exportLibrary.db verified: no dangling references")
         except ImportError:
             pass
+
+        # artwork on disk: every referenced cover plus the _m variant each
+        # database's consumer derives from it.  A missing _m is invisible in
+        # both databases and shows up only as art that will not render.
+        missing_art = []
+        for _aid, apath, bpath in images:
+            for ref in (apath, bpath):
+                for cand in (ref, ref.replace(".jpg", "_m.jpg")):
+                    if not (vol / cand.lstrip("/")).exists():
+                        missing_art.append(cand)
+        if missing_art:
+            raise AssertionError(
+                f"{len(missing_art)} artwork file(s) referenced but not on the "
+                f"stick, first: {missing_art[0]}")
+        if images:
+            log(f"artwork verified: {4 * len(images)} files present for "
+                f"{len(images)} covers")
 
         # 4) player settings from the corpus
         job["step"] = "player settings"
