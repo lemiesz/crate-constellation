@@ -190,6 +190,12 @@ def page_capacity_split(typ: int, rows: list[bytes], ghost: bool) -> list[list[b
 
 
 # ------------------------------------------------------------------ writer --
+# Sentinel an index page uses in place of a first-data-page pointer when its
+# table holds no rows.  Measured on rekordbox exports: a populated table
+# stores the page index there, an empty one stores this.
+INDEX_NO_DATA = 0x03FFFFFF
+
+
 def build_pdb(template_path: Path, datasets: dict[int, list[bytes]]) -> bytes:
     """Build export.pdb emulating rekordbox's fresh-export conventions, with
     the deck-verified template supplying head pages, per-type generations,
@@ -283,6 +289,17 @@ def build_pdb(template_path: Path, datasets: dict[int, list[bytes]]) -> bytes:
         struct.pack_into("<I", out, hp * PAGE + 0x04, hp)
         nxt = table_page_idx[typ][0] if table_page_idx[typ] else candidates[typ]
         struct.pack_into("<I", out, hp * PAGE + 0x0C, nxt)
+        # The head page is an index page, and its body carries its own pointer
+        # to the table's first data page.  Cloning it from the template leaves
+        # that pointer describing the TEMPLATE's contents, so a table the
+        # template had no rows for still announces itself as empty however
+        # many rows we then write.  A linear walk of the chain finds those
+        # rows anyway, which is why this survived every check we had; players
+        # follow the index and see nothing.  It is why our sticks showed no
+        # artwork: artwork was the one table our template left empty.
+        struct.pack_into("<I", out, hp * PAGE + 0x2C,
+                         table_page_idx[typ][0] if table_page_idx[typ]
+                         else INDEX_NO_DATA)
 
     for typ, pages in table_pages.items():
         for idx, pg in zip(table_page_idx[typ], pages):

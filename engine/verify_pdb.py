@@ -19,6 +19,10 @@ from pathlib import Path
 
 from .pdb import PAGE, Pdb
 
+# What an index page stores instead of a first-data-page pointer when its
+# table is empty.
+INDEX_NO_DATA = 0x03FFFFFF
+
 
 def effective_footer(n_rows: int) -> int:
     """Declared footer size for a page holding n_rows.
@@ -78,6 +82,28 @@ def verify(data: bytes) -> list[str]:
             problems.append(
                 f"table {t['type']}: chain terminator next_page={nxt}, "
                 f"expected empty_candidate={t['empty_candidate']}")
+
+    # A table's head page is an index page whose body carries its own pointer
+    # to the first data page.  A writer that clones head pages from a template
+    # inherits the template's pointer, so a table the template left empty goes
+    # on announcing itself as empty no matter how many rows get written after.
+    # Walking the chain still finds those rows, so nothing else notices; a
+    # player follows the index and sees an empty table.  This is what hid our
+    # album artwork.
+    for t in p.tables:
+        head = t["first"]
+        if head >= n_pages:
+            continue
+        first_data = next((pg for pg in chains[t["type"]]
+                           if not (data[pg * PAGE + 0x1B] & 0x40)), None)
+        declared = struct.unpack_from("<I", data, head * PAGE + 0x2C)[0]
+        want = INDEX_NO_DATA if first_data is None else first_data
+        if declared != want:
+            shown = "empty" if declared == INDEX_NO_DATA else f"page {declared}"
+            problems.append(
+                f"table {t['type']}: index page {head} declares {shown}, "
+                f"but the table's first data page is "
+                f"{'none' if first_data is None else first_data}")
 
     for typ, chain in chains.items():
         for pg in chain:
