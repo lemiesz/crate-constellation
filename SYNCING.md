@@ -28,8 +28,32 @@ shows the full library view — playlists, browse, search — on the XDJ-XZ.
 | `…/rekordbox/exportLibrary.db` | OneLibrary (CDJ-3000-class players), built locally then copied once — never build SQLite directly on a slow stick. Column fidelity is load-bearing; see *Why rekordbox accepts the device* below. |
 | `…/USBANLZ/P{xxx}/{hash}/ANLZ0000.*` | waveforms/grids copied from rekordbox's local analysis, **placed at Pioneer's hash-computed path** (players ignore the DB's analyze_path and recompute the hash), PPTH path byte-spliced + null-terminated |
 | `…/Artwork/00001/aN.jpg` + `bN.jpg` | covers **deck-normalized**: square center-crop, baseline JPEG. Two files per cover, and the two databases point at different ones — `aN.jpg` (80px) from `export.pdb`'s artwork rows, `bN.jpg` (240px) from `exportLibrary.db`'s `image.path`. Both names are measured from a real export; we previously invented `aN_m.jpg`, which rekordbox never writes. Raw embedded art at arbitrary sizes silently renders as NO art on the deck. Served from `art-cache/<sha1>_80/_240.jpg` (precomputed, deduped by content). |
+| `…/rekordbox/playlists3.sync` + `playlists3Plus.sync` | rekordbox's device sync ledgers, byte-identical to each other. Plain XML naming the library and every playlist node; rekordbox reads them back to see what a drive already holds. Ours match rekordbox's output apart from timestamps. |
 | `…/crate-sync.json` | sync manifest (playlists, counts, timestamp) — powers Drive settings repair/re-sync without re-picking playlists. Lives one level **above** `rekordbox/`: that directory holds rekordbox's own files and nothing else. |
 | settings, `extracted/gcred.dat` | cloned from the reference export |
+
+## Initializing a drive
+
+rekordbox prepares a drive the first time it exports to one, and the wizard
+now does the same check before it will sync. `engine/usb_init.py` classifies
+the selected volume:
+
+| state | meaning |
+|---|---|
+| `ready` | prepared and complete — this is what a rekordbox-initialized drive reports, and it is left alone |
+| `empty` | nothing Pioneer-shaped on it; initializing writes everything |
+| `incomplete` | a library directory, but missing files a prepared device has |
+| `unsupported` | a filesystem no player can read; needs a reformat, which the app will not do for you |
+
+Initializing writes the library directory named for the filesystem, the five
+player settings files, `extracted/gcred.dat`, `RBFLTR.DAT`, an empty but
+structurally valid library, and the two sync ledgers. **It never overwrites
+an existing library** — it fills in what is missing and stops.
+
+The settings files matter more than they look: decks read *and write* them,
+and `DEVSETTING.DAT` was silently absent from our sticks for a long time
+because the settings step picked one source directory and that directory has
+only four of the five.
 
 ## Drive settings (USB screen → Drive settings…)
 
