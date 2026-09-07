@@ -446,6 +446,16 @@ from . import usb_sync
 from . import usb_init
 
 
+@app.get("/api/version")
+def version():
+    """Which build is serving this request.
+
+    `stale` is true when the process started before the newest engine edit,
+    meaning it is running code older than what is on disk."""
+    from .build_info import build_info
+    return build_info()
+
+
 @app.get("/api/usb/wizard/targets")
 def wizard_targets():
     """Target drives, each with the state a sync would find it in.

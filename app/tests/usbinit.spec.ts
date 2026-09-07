@@ -104,3 +104,15 @@ test("wizard targets carry each drive's device state", async ({ request }) => {
     expect(typeof row.device.can_sync).toBe("boolean");
   }
 });
+
+// The engine serving code older than what is on disk is invisible on the
+// resulting stick, so it gets its own check.
+test("the engine reports which build is running", async ({ request }) => {
+  const r = await request.get("/api/version");
+  expect(r.ok()).toBeTruthy();
+  const d = await r.json();
+  expect(typeof d.commit).toBe("string");
+  expect(typeof d.dirty).toBe("boolean");
+  expect(typeof d.stale).toBe("boolean");
+  expect(d.stale, "engine is serving code older than the working tree").toBe(false);
+});

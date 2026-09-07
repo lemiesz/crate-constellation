@@ -521,6 +521,9 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
         log(f"⏱ {step_done}: {now - _last[0]:.1f}s")
         _last[0] = now
     try:
+        from .build_info import build_id
+        job["build"] = build_id()
+        log(f"engine build: {job['build']}")
         p = plan(library_db, playlist_ids)
         mark("planning")
         tracks = [t for t in p["tracks"] if t["size"]]
@@ -834,6 +837,7 @@ def _run(job: dict, library_db: Path, playlist_ids: list[str], vol: Path) -> Non
             "n_tracks": len(tracks),
             "n_playlists": len(p["playlists"]),
             "n_artwork": len(images),
+            "engine_build": job.get("build", "unknown"),
         }, indent=1))
 
         # flush the page cache so "done" means safe-to-eject (and MB/s is honest)

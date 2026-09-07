@@ -598,9 +598,15 @@ export function SyncWizard({ onClose }: { onClose: () => void }) {
       if (stick) setVol(stick.volume);
     });
 
+  // Guard against the engine serving code older than what is on disk. The
+  // server runs with --reload so this should never fire, but a sync from a
+  // stale process is invisible on the resulting stick and has cost real
+  // hardware test cycles, so it is worth saying out loud.
+  const [build, setBuild] = useState<any>(null);
   useEffect(() => {
     loadTargets();
     fetch("/api/playlists").then(r => r.json()).then(d => setLibPls(d.rows));
+    fetch("/api/version").then(r => r.json()).then(setBuild).catch(() => {});
   }, []);
 
   // A drive rekordbox has never prepared has no player settings and no
@@ -751,6 +757,15 @@ export function SyncWizard({ onClose }: { onClose: () => void }) {
               ))}
             </select>
           </div>
+          {build?.stale && (
+            <div className="wizinit" style={{ borderColor: "#e5484d" }} data-testid="stale-engine">
+              <div className="wizinit-h">The engine is running older code than what is on disk</div>
+              <div className="wizinit-n">
+                Anything you sync now comes from the older build. Restart it
+                with <code>./run.sh restart</code> before syncing.
+              </div>
+            </div>
+          )}
           {device && device.state !== "ready" && (
             <div className="wizinit" data-testid="device-init">
               <div className="wizinit-h">
