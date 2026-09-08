@@ -156,12 +156,18 @@ export function SyncView() {
   useEffect(() => {
     setJob(stream.jobs.filter((j: any) => j.state === "running"));
   }, [stream]);
-  const reimport = () => {
-    if (st?.pending_edits
-      && !window.confirm(`Re-import overwrites ${st.pending_edits} local edit(s) made since the last import. Continue?`)) return;
+  // Confirmed in place rather than through a browser dialog, so the edit
+  // count you are agreeing to lose stays on screen next to the button.
+  const [confirmImport, setConfirmImport] = useState(false);
+  const doImport = () => {
+    setConfirmImport(false);
     setBusy(true);
     fetch("/api/sync/import", { method: "POST" }).then(r => r.json())
       .finally(() => { setBusy(false); load(); });
+  };
+  const reimport = () => {
+    if (st?.pending_edits) setConfirmImport(true);
+    else doImport();
   };
   return (
     <div className="viewwrap">
@@ -187,9 +193,27 @@ export function SyncView() {
             <div className="kv"><span>master.db size</span><b>{st?.rekordbox ? `${Math.round(st.rekordbox.size / 1048576)} MB` : "—"}</b></div>
             <div className="kv"><span>local edits since import</span>
               <b style={{ color: st?.pending_edits ? "var(--amber)" : "var(--green)" }}>{st?.pending_edits ?? "…"}</b></div>
-            <button className="syncbtn" onClick={reimport} disabled={busy}>
-              {busy ? "importing…" : "Re-import from rekordbox"}
-            </button>
+            {confirmImport ? (
+              <div className="mconfirm" data-testid="confirm-import">
+                <div className="md">
+                  This overwrites {st?.pending_edits} local edit
+                  {st?.pending_edits === 1 ? "" : "s"} made since the last
+                  import. They cannot be recovered.
+                </div>
+                <div className="mbtns">
+                  <button className="syncbtn" onClick={doImport} disabled={busy}>
+                    Overwrite and re-import
+                  </button>
+                  <button className="mcancel" onClick={() => setConfirmImport(false)}>
+                    Keep my edits
+                  </button>
+                </div>
+              </div>
+            ) : (
+              <button className="syncbtn" onClick={reimport} disabled={busy}>
+                {busy ? "importing…" : "Re-import from rekordbox"}
+              </button>
+            )}
             <div className="ta" style={{ fontSize: 10.5, marginTop: 6 }}>
               read-only against master.db — safe while rekordbox is open
             </div>
@@ -336,27 +360,28 @@ export function UsbView({ onOpen }: { onOpen: (id: string) => void }) {
 
   const [match, setMatch] = useState<any>(null);
 
+  // The dry run leaves its result on screen with its own Write button, rather
+  // than throwing a browser confirm over the top of it. The numbers you are
+  // agreeing to stay visible while you decide.
   const patch = async () => {
     setBusy(true); setLog(null); setMatch(null);
     try {
       const dry = await (await fetch("/api/usb/patch-matching", {
         method: "POST", headers: { "content-type": "application/json" }, body: "{}",
       })).json();
-      if (dry.detail) { setLog(dry.detail); setBusy(false); return; }
-      setMatch(dry);
-      if (!dry.pairs) { setBusy(false); return; }
-      if (!window.confirm(
-        `Write ${dry.pairs} matching pairs for the ${dry.tracks_on_stick} tracks `
-        + `on ${dry.volume}?\n\n${dry.tracks_matched} of them get at least one match.\n\n`
-        + `Both tables are written and the originals are backed up off the drive. `
-        + `Don't let rekordbox sync this drive meanwhile.`)) {
-        setBusy(false); return;
-      }
+      if (dry.detail) setLog(dry.detail); else setMatch(dry);
+    } catch (e) { setLog(String(e)); }
+    setBusy(false);
+  };
+
+  const applyMatch = async () => {
+    setBusy(true);
+    try {
       const res = await (await fetch("/api/usb/patch-matching", {
         method: "POST", headers: { "content-type": "application/json" },
         body: JSON.stringify({ apply: true }),
       })).json();
-      setMatch(res);
+      if (res.detail) setLog(res.detail); else setMatch(res);
       fetch("/api/usb/status").then(r => r.json()).then(setSt);
     } catch (e) { setLog(String(e)); }
     setBusy(false);
@@ -365,7 +390,7 @@ export function UsbView({ onOpen }: { onOpen: (id: string) => void }) {
   const matchPanel = match && (
     <div className="mpanel" data-testid="match-result">
       <div className="mrow">
-        <span className="mk">{match.applied ? "Written to" : "Ready for"}</span>
+        <span className="mk">{match.applied ? "Written to" : "Ready to write to"}</span>
         <b>{match.volume}</b>
       </div>
       <div className="mstats">
@@ -380,13 +405,31 @@ export function UsbView({ onOpen }: { onOpen: (id: string) => void }) {
           <span className="md">{s.detail}</span>
         </div>
       ))}
-      {!match.applied && match.pairs > 0 && (
-        <div className="md">Nothing written yet — this was the dry run.</div>
-      )}
       {(match.notes ?? []).map((n: string, i: number) => (
         <div key={"n" + i} className="md">{n}</div>
       ))}
       {match.backups && <div className="md">Originals backed up to {match.backups}</div>}
+      {!match.applied && match.pairs > 0 && (
+        <div className="mconfirm">
+          <div className="md">
+            Nothing has been written yet. Both tables are replaced and the
+            originals are backed up off the drive. Don't let rekordbox sync
+            this drive while it runs.
+          </div>
+          <div className="mbtns">
+            <button className="syncbtn" disabled={busy} onClick={applyMatch}
+                    data-testid="match-apply">
+              {busy ? "Writing…" : `Write ${match.pairs.toLocaleString()} pairs`}
+            </button>
+            <button className="mcancel" disabled={busy} onClick={() => setMatch(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+      {match.applied && match.ok && (
+        <div className="md">Done. Eject cleanly, then test on the deck.</div>
+      )}
     </div>
   );
 
