@@ -309,6 +309,34 @@ duplicates (103,008 pairs at zero offset), so the honest count is **11,092 track
   Stop using MIK when the win-or-tie rate clears 60 %, the first drop is cued on ≥ 90 % of tracks,
   and the confidence score is demonstrably monotone.
 
+## Could we replace Beat This with our own DSP?
+
+Tested, because the beat tracker is the entire 14.5 h. A model-free estimator — ffmpeg decode,
+log-mel flux onset envelope, coarse-to-fine tempo scan seeded by `tracks.bpm`, phase by comb
+cross-correlation — measured against rekordbox's grids on 60 random tracks:
+
+| | model-free | Beat This + constant-tempo fit |
+|---|---|---|
+| BPM within 0.05 of rekordbox | 70–80 % | 9 of 11 exact |
+| median beat error | **111 ms** | **16 ms** |
+| within 25 ms | 0 % | — |
+| time per track | **0.75 s** | 3.8 s |
+
+**Tempo is easy; phase is the whole problem.** The cheap method gets the tempo nearly for
+free and five times faster, then throws it away by putting the grid down in the wrong place.
+A 111 ms median at a 470 ms beat period is a quarter beat, and the signed offsets have a
+standard deviation of 128 ms — near period/3, which is the signature of an estimate carrying
+no information rather than one with a fixable bias.
+
+This does not prove careful DSP could not do it: the envelope summed all 64 mel bands, which
+smears the kick transient into hats and pads, and a low-band detector with real peak-picking
+would likely do far better. But Beat This already solves precisely the part that failed, its
+beats are what let the constant-tempo fit land within 16 ms, and its cost is avoidable for
+the back catalogue anyway. **Use it. Do not try to beat it.**
+
+The measurement earns its keep as confirmation of the risk this plan already names: grid
+phase, not tempo, is where a grid goes wrong, and Gate 1 has to measure it separately.
+
 ## Compute budget (measured on this M1 Pro, 24 real tracks, 118 min of audio)
 
 | stage | throughput | whole library (19,766 tracks / 1,713 h) |
