@@ -177,6 +177,28 @@ waveform, grid, needle search and jog on the XZ.
 
 ## Cue point detection
 
+### What MIK is doing, and what that means for the design
+
+MIK finds the sections of a track and cues their boundaries — drops, builds, breakdowns —
+so the thing being detected is a **change in energy**, not novelty in the abstract.
+
+Its own output says so. 880 tracks here carry MIK's energy-labelled cues, and the label is
+*per cue*, not per track: the value varies within a track on 845 of those 880, most commonly
+by 3 to 4 points. Averaged by position, cue 1 sits lowest at 4.35 and the rest hover around
+5.4 to 5.7 — an intro anchor followed by sections that rise and fall. Each cue is marking a
+section and carrying that section's energy.
+
+Two consequences:
+
+1. **The explicit energy detectors are the primary signal, not a supplement to the SSM.**
+   `drop`, `breakdown` and `riser` below are weighted above the novelty curve deliberately.
+   Foote novelty finds *any* boundary; a DJ wants the ones where the energy moved.
+2. **Emit an energy value per cue**, computed from the section that follows it on the same
+   1-10 scale `energy_score.py` already calibrates. That makes our cues readable the way
+   MIK's are, and gives a second thing to compare against those 880 tracks beyond position
+   alone — a cue in the right place with the wrong energy label means the section boundary
+   was found but the section was misread.
+
 ### Candidates
 
 Downbeats only, from the Phase 1 grid — 66.9 % of MIK's cues are already within 25 ms of a bar line
@@ -217,8 +239,9 @@ are not forced into 8-bar spacing. Hard constraints: the first drop must be cued
 8 bars, at least one cue early besides slot 1.
 
 Cues are numbered strictly by time, matching MIK's convention so A/B comparison is like-for-like.
-Names carry the detector that fired (`IN`, `BLD`, `DROP`, `BRK`, `OUT`) and colours are **disjoint
-from MIK's** (`color_idx` 0 and 22) so you can see at a glance whose cues you are looking at.
+Names carry the detector that fired (`IN`, `BLD`, `DROP`, `BRK`, `OUT`) plus the energy of the
+section they open, and colours are **disjoint from MIK's** (`color_idx` 0 and 22) so you can see at
+a glance whose cues you are looking at.
 
 ### Confidence and the fallback ladder
 
