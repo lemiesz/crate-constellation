@@ -298,6 +298,29 @@ duplicates (103,008 pairs at zero offset), so the honest count is **11,092 track
   Stop using MIK when the win-or-tie rate clears 60 %, the first drop is cued on ≥ 90 % of tracks,
   and the confidence score is demonstrably monotone.
 
+## Compute budget (measured on this M1 Pro, 24 real tracks, 118 min of audio)
+
+| stage | throughput | whole library (19,766 tracks / 1,713 h) |
+|---|---|---|
+| Energy-led feature pass (ffmpeg decode + STFT + 64-band mel + flux), 8 workers | 4.8 tracks/s, ~1,400x realtime | **~1.2 h** |
+| Same plus HPSS and CQT/chroma | ~1.8 tracks/s | **~3 h** |
+| Beat This beat tracking, 3+ workers | 0.38 tracks/s, ~120x realtime | **~14.5 h** |
+
+Beat tracking **saturates at three workers** — 3x2 threads, 6x1 and 8x1 all land within a
+second of each other at 120x realtime, against 77x for a single worker using all eight
+threads. It is memory-bandwidth bound, not core bound, so throwing more processes at it does
+nothing.
+
+Which means the interesting number is what we *don't* have to run: rekordbox already computed
+a grid for 19,691 of these tracks, and the plan keeps them. Cue points for the whole library
+therefore cost the feature pass alone — **one to three hours** — not the sixteen it would take
+to re-derive every grid from audio. A new crate of 50 tracks costs about 30 seconds, or two
+and a half minutes if it needs its own grid.
+
+Cache the bar-level feature matrices (~250 KB/track, ~5 GB total). Re-tuning the detector
+then replays over cache in seconds instead of hours, which is the difference between
+iterating three times and three hundred.
+
 ## Environment
 
 The analysis stack needs Python 3.12 and torch; the engine runs 3.14. Analysis therefore runs as a
