@@ -50,13 +50,24 @@ neither the renderer nor the deck can tell.
 - `analysis` — `grid_bpm`, `grid_conf`, `first_beat_ms`, `downbeat_phase`, `key`, `key_conf`,
   `peak`, `source` (`rekordbox` | `crate`), `engine_version`, `analyzed_at`.
 
-  A constant-tempo grid is not an approximation, it is exactly what rekordbox writes: in a 400-track
-  random sample **400 of 400 grids carry one tempo for the whole track**. A grid is three numbers.
+  A grid is exactly three numbers: tempo, first-beat offset, downbeat phase. That is not a
+  simplification made for convenience — it is what the user wants (no dynamic grids, ever) and
+  what rekordbox already writes: in a 400-track random sample, **400 of 400 grids carry one
+  tempo for the whole track**.
+
+  It is also a strong prior worth exploiting rather than merely respecting. A general beat
+  tracker is solving a harder problem than we have, and fitting one tempo across its output
+  beats its own raw beats — see the measurements below.
 
   `grid_bpm` is deliberately not `tracks.bpm`. They agree on 398 of those 400 and diverge exactly
   where `bpm_halftime_fix.py` halved the display value for hip-hop and halftime — grid 140,
   `tracks.bpm` 70. The grid needs the physical tempo; the display BPM stays where it is.
-- `beats` — only for imported grids that are *not* constant tempo. Normally empty.
+- No per-beat table. **We never emit a variable-tempo grid**, even where the audio would
+  support one — the user does not use rekordbox's dynamic grid mode, and a grid whose tempo
+  moves makes the deck's sync drift mid-mix. A wrong-but-constant grid is recoverable by ear;
+  a drifting one is not. Where a track genuinely does drift (live-played, disco, some
+  hip-hop), the answer is a low confidence score and keeping the imported grid, not a
+  variable one.
 - `waveforms` — `track_id`, `kind`, `blob`, cached at the deck's own resolution so sync never
   recomputes and the in-app player can stop parsing rekordbox files.
 - `segments` — structural boundaries with labels, from `PSSI` on import or from our analysis.
