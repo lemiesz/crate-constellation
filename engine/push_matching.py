@@ -33,6 +33,10 @@ from .matching import stick_pairs
 
 HERE = Path(__file__).resolve().parent
 BACKUPS = HERE.parent.parent / "library-management/stick-backups"
+# Each push would otherwise leave another copy of two databases that are
+# usually 17 MB together and usually identical to the last one. Keep a few
+# per drive, skip writing one that duplicates the newest, and prune the rest.
+KEEP_PER_FILE = 3
 
 
 def pioneer_dir(vol: Path) -> Path:
@@ -103,12 +107,7 @@ def run(vol: Path, apply: bool = False) -> dict:
     if not apply:
         return out
 
-    BACKUPS.mkdir(parents=True, exist_ok=True)
-    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
-    for name in ("exportLibrary.db", "exportExt.pdb"):
-        if (rb / name).exists():
-            shutil.copy2(rb / name, BACKUPS / f"{name}.bak-{stamp}")
-    out["backups"] = str(BACKUPS)
+    out["backups"] = str(back_up(rb, vol.name))
 
     db = None
     if (rb / "exportLibrary.db").exists():
@@ -145,6 +144,30 @@ def run(vol: Path, apply: bool = False) -> dict:
              f"{got} rows — the table an XDJ-XZ reads. "
              f"My Tags preserved ({len(check.rows(3))})")
     return out
+
+
+def back_up(rb: Path, volume: str, keep: int = KEEP_PER_FILE) -> Path:
+    """Copy what we are about to replace, without hoarding.
+
+    Backups live per drive. One identical to the newest already there is not
+    written again, since a re-run usually changes nothing, and anything older
+    than the newest `keep` is removed.
+    """
+    dest = BACKUPS / volume
+    dest.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.datetime.now().strftime("%Y%m%d-%H%M%S")
+    for name in ("exportLibrary.db", "exportExt.pdb"):
+        src = rb / name
+        if not src.exists():
+            continue
+        existing = sorted(dest.glob(f"{name}.bak-*"), reverse=True)
+        if existing and existing[0].stat().st_size == src.stat().st_size \
+                and existing[0].read_bytes() == src.read_bytes():
+            continue                       # identical to the newest already kept
+        shutil.copy2(src, dest / f"{name}.bak-{stamp}")
+        for old in sorted(dest.glob(f"{name}.bak-*"), reverse=True)[keep:]:
+            old.unlink(missing_ok=True)
+    return dest
 
 
 def main(argv: list[str]) -> int:
