@@ -348,6 +348,62 @@ def sync_status():
             "rekordbox": rb, "traktor": tk, "usb_volumes": usb}
 
 
+@app.get("/api/sync/pending-edits")
+def sync_pending_edits():
+    """What a re-import would throw away, per track.
+
+    The raw journal count overstates it: toggling energy 5 -> 7 -> 5, or
+    adding a tag and removing it again, is several journal rows but loses
+    nothing. Each track's edits are collapsed to their net effect: energy is
+    the first old value against the last new one, and a tag counts only if
+    its final state differs from where it started. Tracks whose edits all
+    cancel out stay in the list with no changes, so every journal row the
+    status card counts is accounted for somewhere."""
+    imported = (q("SELECT value FROM meta WHERE key='imported_at'") or
+                [{"value": None}])[0]["value"]
+    if not imported:
+        return {"imported_at": None, "raw_edits": 0, "net_changes": 0, "tracks": []}
+    rows = q("SELECT j.ts, j.entity_id, j.field, j.old_value, j.new_value, "
+             "t.title, t.artist FROM edit_journal j "
+             "LEFT JOIN tracks t ON t.id = j.entity_id "
+             "WHERE j.ts > ? ORDER BY j.id", (imported,))
+    by_track: dict[str, dict] = {}
+    for r in rows:
+        t = by_track.setdefault(r["entity_id"], {
+            "id": r["entity_id"], "title": r["title"], "artist": r["artist"],
+            "edits": 0, "first_ts": r["ts"], "last_ts": r["ts"],
+            "_energy": None, "_tags": {}})
+        t["edits"] += 1
+        t["last_ts"] = r["ts"]
+        if r["field"] == "energy":
+            if t["_energy"] is None:
+                t["_energy"] = [r["old_value"], r["new_value"]]
+            t["_energy"][1] = r["new_value"]
+        elif r["field"] in ("tag:add", "tag:remove"):
+            added = r["field"] == "tag:add"
+            name = r["new_value"] if added else r["old_value"]
+            # before its first edit, a tag was in the opposite state
+            start = t["_tags"].get(name, (not added, None))[0]
+            t["_tags"][name] = (start, added)
+    out = []
+    for t in by_track.values():
+        changes = []
+        e = t.pop("_energy")
+        if e and e[0] != e[1]:
+            changes.append({"kind": "energy", "from": e[0], "to": e[1]})
+        for name, (start, end) in t.pop("_tags").items():
+            if start != end:
+                changes.append({"kind": "tag", "tag": name,
+                                "change": "added" if end else "removed"})
+        t["changes"] = changes
+        out.append(t)
+    # real losses first, newest first within each group
+    out.sort(key=lambda t: t["last_ts"], reverse=True)
+    out.sort(key=lambda t: not t["changes"])
+    return {"imported_at": imported, "raw_edits": len(rows),
+            "net_changes": sum(len(t["changes"]) for t in out), "tracks": out}
+
+
 @app.post("/api/sync/import")
 def sync_import():
     """Re-seed library.db from rekordbox (read-only against master.db).

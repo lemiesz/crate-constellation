@@ -393,3 +393,19 @@ body {
            border-radius: 6px; padding: 6px 12px; font-size: 12px; cursor: pointer; }
 .mcancel:hover:not(:disabled) { color: var(--ink); border-color: var(--ink2); }
 .mcancel:disabled { opacity: .5; cursor: default; }
+
+/* pending-edits review (re-import modal) */
+.pe-link { background: none; border: none; padding: 0; font: inherit; font-weight: 650;
+  color: var(--amber); cursor: pointer; text-decoration: underline dotted; text-underline-offset: 3px; }
+.pe-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 12px;
+  padding: 7px 6px; border-bottom: 1px solid var(--hair); }
+.pe-row:last-child { border-bottom: none; }
+.pe-name { font-size: 12.5px; color: var(--ink); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pe-changes { display: flex; flex-wrap: wrap; gap: 4px; justify-content: flex-end; }
+.pe-meta { grid-column: 1 / -1; font-size: 10.5px; color: var(--muted); }
+.pe-chip { font-size: 11px; border-radius: 99px; padding: 1px 8px; color: var(--ink2);
+  border: 1px solid var(--line); white-space: nowrap; }
+.pe-chip.added { color: var(--green); border-color: rgba(25,158,112,.4); }
+.pe-chip.removed { color: #e5484d; border-color: rgba(229,72,77,.4); }
+.pe-fold { flex: none; display: block; width: 100%; padding: 8px 6px 4px;
+  font-size: 11.5px; color: var(--muted); }

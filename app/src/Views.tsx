@@ -137,6 +137,88 @@ type SyncStatus = {
 };
 type Journal = { id: number; ts: string; field: string; entity_id: string;
   old_value: string | null; new_value: string | null };
+type NetChange = { kind: "energy"; from: string | null; to: string | null }
+  | { kind: "tag"; tag: string; change: "added" | "removed" };
+type PendingTrack = { id: string; title: string | null; artist: string | null;
+  edits: number; first_ts: string; last_ts: string; changes: NetChange[] };
+type PendingEdits = { imported_at: string | null; raw_edits: number;
+  net_changes: number; tracks: PendingTrack[] };
+
+// What a re-import would overwrite, as net changes per track. The raw
+// journal count alone reads as alarming (a test flipping one tag 55 times
+// is 110 "edits") when the real loss may be one energy value, so the modal
+// leads with the net figure and folds the cancelled-out tracks away.
+function ImportEditsModal({ busy, onImport, onClose }: {
+  busy: boolean; onImport: () => void; onClose: () => void;
+}) {
+  const [d, setD] = useState<PendingEdits | null>(null);
+  const [showNoop, setShowNoop] = useState(false);
+  useEffect(() => {
+    fetch("/api/sync/pending-edits").then(r => r.json()).then(setD);
+  }, []);
+  const real = d?.tracks.filter(t => t.changes.length) ?? [];
+  const noop = d?.tracks.filter(t => !t.changes.length) ?? [];
+  const name = (t: PendingTrack) =>
+    `${t.artist ?? "?"} — ${t.title ?? t.id}`;
+  const row = (t: PendingTrack) => (
+    <div key={t.id} className="pe-row">
+      <div className="pe-name" title={name(t)}>{name(t)}</div>
+      <div className="pe-changes">
+        {t.changes.length ? t.changes.map((c, i) => c.kind === "energy" ? (
+          <span key={i} className="pe-chip">energy {c.from ?? "—"} → <b>{c.to ?? "—"}</b></span>
+        ) : (
+          <span key={i} className={`pe-chip ${c.change}`}>
+            {c.change === "added" ? "+" : "−"} {c.tag}</span>
+        )) : <span className="ta">no net change</span>}
+      </div>
+      <div className="pe-meta">{t.edits} edit{t.edits === 1 ? "" : "s"} · last {t.last_ts}</div>
+    </div>
+  );
+  return (
+    <div className="wizov" data-testid="import-edits-modal"
+      onClick={e => { if (e.target === e.currentTarget && !busy) onClose(); }}>
+      <div className="wiz" style={{ width: 640 }}>
+        <div className="wizhd">
+          <span className="vtitle">Local edits since import</span>
+          <span className="ta" style={{ fontSize: 11.5 }}>
+            {d?.imported_at ? `last import ${d.imported_at} UTC` : ""}</span>
+        </div>
+        {!d ? <div className="ta">loading…</div> : (
+          <>
+            <div className="md" style={{ fontSize: 12.5, lineHeight: 1.55 }}>
+              Re-importing rebuilds tracks, tags and cues from rekordbox.
+              {" "}<b data-testid="pe-summary">
+                {d.net_changes} change{d.net_changes === 1 ? "" : "s"} on {real.length} track
+                {real.length === 1 ? "" : "s"}</b> will be lost
+              {d.raw_edits !== d.net_changes &&
+                <> ({d.raw_edits} journal edits; the rest cancel each other out)</>}.
+              The edit journal itself is kept.
+            </div>
+            <div className="wizlist" style={{ minHeight: 0 }}>
+              {real.map(row)}
+              {real.length === 0 && <div className="ta" style={{ padding: 6 }}>
+                Nothing would actually change — every edit was undone.</div>}
+              {noop.length > 0 && (
+                <>
+                  <button className="wizcaret pe-fold" onClick={() => setShowNoop(!showNoop)}>
+                    {showNoop ? "▾" : "▸"} {noop.length} track{noop.length === 1 ? "" : "s"} with
+                    edits that cancel out</button>
+                  {showNoop && noop.map(row)}
+                </>
+              )}
+            </div>
+          </>
+        )}
+        <div className="mbtns" style={{ justifyContent: "flex-end" }}>
+          <button className="mcancel" onClick={onClose} disabled={busy}>Keep my edits</button>
+          <button className="syncbtn" onClick={onImport} disabled={busy || !d}>
+            {busy ? "importing…" : d && d.net_changes === 0 ? "Re-import" : "Overwrite and re-import"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 export function SyncView() {
   const [st, setSt] = useState<SyncStatus | null>(null);
@@ -156,14 +238,13 @@ export function SyncView() {
   useEffect(() => {
     setJob(stream.jobs.filter((j: any) => j.state === "running"));
   }, [stream]);
-  // Confirmed in place rather than through a browser dialog, so the edit
-  // count you are agreeing to lose stays on screen next to the button.
+  // Confirmed in a modal that lists what would be lost, per track, rather
+  // than a bare count next to the button.
   const [confirmImport, setConfirmImport] = useState(false);
   const doImport = () => {
-    setConfirmImport(false);
     setBusy(true);
     fetch("/api/sync/import", { method: "POST" }).then(r => r.json())
-      .finally(() => { setBusy(false); load(); });
+      .finally(() => { setBusy(false); setConfirmImport(false); load(); });
   };
   const reimport = () => {
     if (st?.pending_edits) setConfirmImport(true);
@@ -192,27 +273,16 @@ export function SyncView() {
             <div className="kv"><span>last import</span><b>{st?.imported_at ?? "—"} UTC</b></div>
             <div className="kv"><span>master.db size</span><b>{st?.rekordbox ? `${Math.round(st.rekordbox.size / 1048576)} MB` : "—"}</b></div>
             <div className="kv"><span>local edits since import</span>
-              <b style={{ color: st?.pending_edits ? "var(--amber)" : "var(--green)" }}>{st?.pending_edits ?? "…"}</b></div>
-            {confirmImport ? (
-              <div className="mconfirm" data-testid="confirm-import">
-                <div className="md">
-                  This overwrites {st?.pending_edits} local edit
-                  {st?.pending_edits === 1 ? "" : "s"} made since the last
-                  import. They cannot be recovered.
-                </div>
-                <div className="mbtns">
-                  <button className="syncbtn" onClick={doImport} disabled={busy}>
-                    Overwrite and re-import
-                  </button>
-                  <button className="mcancel" onClick={() => setConfirmImport(false)}>
-                    Keep my edits
-                  </button>
-                </div>
-              </div>
-            ) : (
-              <button className="syncbtn" onClick={reimport} disabled={busy}>
-                {busy ? "importing…" : "Re-import from rekordbox"}
-              </button>
+              {st?.pending_edits ? (
+                <button className="pe-link" data-testid="view-edits"
+                  onClick={() => setConfirmImport(true)}>{st.pending_edits} · review</button>
+              ) : <b style={{ color: "var(--green)" }}>{st?.pending_edits ?? "…"}</b>}</div>
+            <button className="syncbtn" onClick={reimport} disabled={busy}>
+              {busy ? "importing…" : "Re-import from rekordbox"}
+            </button>
+            {confirmImport && (
+              <ImportEditsModal busy={busy} onImport={doImport}
+                onClose={() => setConfirmImport(false)} />
             )}
             <div className="ta" style={{ fontSize: 10.5, marginTop: 6 }}>
               read-only against master.db — safe while rekordbox is open
