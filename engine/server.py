@@ -28,6 +28,13 @@ def norm(s: str) -> str:
 
 app = FastAPI(title="Crate Constellation engine")
 
+# A fresh install has no library yet. An empty one with the real schema lets
+# every screen render (zero tracks) while onboarding walks through the import.
+if not DB.exists():
+    _c = sqlite3.connect(DB)
+    _c.executescript((HERE / "schema.sql").read_text())
+    _c.close()
+
 
 def q(sql: str, params: tuple = ()) -> list[dict]:
     con = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
@@ -424,6 +431,50 @@ def sync_import():
     return {"ok": True, "log": r.stdout.strip()}
 
 
+# --- onboarding ----------------------------------------------------------
+from . import onboarding
+
+
+def _require_template():
+    """Writing a stick needs the rekordbox template; say so instead of failing mid-job."""
+    if not onboarding.template_status()["ready"]:
+        raise HTTPException(409, "Stick exports aren't set up yet. Open Getting started "
+                                 "(rail, bottom) and capture a template from a "
+                                 "rekordbox-exported stick.")
+
+
+@app.get("/api/onboarding/status")
+def onboarding_status():
+    return onboarding.status(DB)
+
+
+@app.post("/api/onboarding/capture-template")
+def onboarding_capture(body: dict = Body(...)):
+    """Copy a rekordbox-exported stick's databases into pdb-corpus/deck-verified.
+    Reads the stick only; an existing template is moved aside, never lost."""
+    volume = body.get("volume", "")
+    vol = Path("/Volumes") / volume
+    if not volume or "/" in volume or not vol.is_dir():
+        raise HTTPException(404, f"volume {volume!r} is not mounted")
+    log: list[str] = []
+    try:
+        r = onboarding.capture_template(vol, replace=bool(body.get("replace")),
+                                        log=log.append)
+    except RuntimeError as e:
+        raise HTTPException(409, str(e))
+    return r | {"log": log}
+
+
+@app.post("/api/onboarding/deck-confirmed")
+def onboarding_deck_confirmed(body: dict = Body(default={})):
+    return onboarding.confirm_deck(bool(body.get("confirmed", True)))
+
+
+@app.post("/api/onboarding/complete")
+def onboarding_complete(body: dict = Body(default={})):
+    return onboarding.write_state(onboarding_completed=bool(body.get("completed", True)))
+
+
 # --- USB stick explorer -------------------------------------------------
 from . import usb as usbmod
 
@@ -540,6 +591,7 @@ def usb_initialize(body: dict = Body(...)):
         raise HTTPException(404, f"volume {volume!r} is not mounted")
     if volume in usb_sync.EXCLUDE_VOLUMES:
         raise HTTPException(400, f"{volume} is not a valid target")
+    _require_template()
     log: list[str] = []
     try:
         return usb_init.initialize(vol, log=log.append) | {"log": log}
@@ -577,6 +629,7 @@ def wizard_plan(body: dict = Body(...)):
 
 @app.post("/api/usb/wizard/start")
 def wizard_start(body: dict = Body(...)):
+    _require_template()
     try:
         usb_sync.start(DB, body.get("playlist_ids", []), body.get("volume", ""))
     except RuntimeError as e:

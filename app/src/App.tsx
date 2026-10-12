@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Constellation from "./Constellation";
 import { BackupsView, EnergyView, SyncView, UsbView } from "./Views";
 import SyncDrawer from "./SyncDrawer";
+import Onboarding from "./Onboarding";
 
 type Tag = { bank: string; name: string };
 type Track = {
@@ -143,6 +144,12 @@ export default function App() {
     fetch(`/api/track/${id}`).then(r => r.json()).then(setSel);
 
   const [view, setView] = useState<"library" | "constellation" | "energy" | "backups" | "sync" | "usb">("library");
+  // first run: onboarding opens itself only for an empty, never-onboarded install
+  const [onboarding, setOnboarding] = useState(false);
+  const [dataGen, setDataGen] = useState(0);   // bump to refetch library data
+  useEffect(() => {
+    fetch("/api/onboarding/status").then(r => r.json()).then(s => { if (s.show) setOnboarding(true); });
+  }, []);
   const [tagFilter, setTagFilter] = useState<string | null>(null);
   const browseTag = (name: string) => {
     setTagFilter(name); setQuery(""); setPlaylist(null); setView("library");
@@ -155,7 +162,7 @@ export default function App() {
   const playById = (id: string) => fetch(`/api/track/${id}`).then(r => r.json()).then(setPlaying);
 
   const [catalog, setCatalog] = useState<{ id: string; bank: string; name: string; n: number }[]>([]);
-  useEffect(() => { fetch("/api/tags").then(r => r.json()).then(d => setCatalog(d.rows)); }, []);
+  useEffect(() => { fetch("/api/tags").then(r => r.json()).then(d => setCatalog(d.rows)); }, [dataGen]);
   const [addBank, setAddBank] = useState<string | null>(null);
 
   const refreshSel = (id: string) => {
@@ -230,7 +237,7 @@ export default function App() {
   useEffect(() => {
     fetch("/api/stats").then(r => r.json()).then(setStats);
     fetch("/api/playlists").then(r => r.json()).then(d => setPlaylists(d.rows));
-  }, []);
+  }, [dataGen]);
 
   useEffect(() => {
     const t = setTimeout(() => setDebounced(query), 250);
@@ -246,7 +253,7 @@ export default function App() {
       if (!stale) { setTracks(d.rows); setTotal(d.total); }
     });
     return () => { stale = true; };
-  }, [debounced, playlist, tagFilter]);
+  }, [debounced, playlist, tagFilter, dataGen]);
 
   const roots = useMemo(
     () => playlists.filter(p => p.parent_id == null),
@@ -309,7 +316,10 @@ export default function App() {
           onClick={() => setView("energy")} />
         <Icon on={view === "backups"} title="Backups" d="M10 3a7 7 0 1 0 0 14 7 7 0 0 0 0-14M10 6.5V10l2.5 2"
           onClick={() => setView("backups")} />
-        <Icon extra="last" title="Settings (soon)" d="M3 5h14M3 10h14M3 15h14" />
+        <Icon extra="last" on={onboarding} title="Getting started"
+          d="M10 2.5a7.5 7.5 0 1 0 0 15 7.5 7.5 0 0 0 0-15M7.8 7.6a2.3 2.3 0 1 1 3.2 2.1c-.6.3-1 .8-1 1.5v.6M10 14.2v.1"
+          onClick={() => setOnboarding(true)} />
+        <Icon title="Settings (soon)" d="M3 5h14M3 10h14M3 15h14" />
       </nav>
 
       {view === "library" && <aside className="tree">
@@ -520,6 +530,13 @@ export default function App() {
         )}
       </aside>
       <SyncDrawer />
+      {onboarding && (
+        <Onboarding
+          onClose={() => { setOnboarding(false); setDataGen(g => g + 1); }}
+          onGo={v => setView(v)}
+          onImported={() => setDataGen(g => g + 1)}
+        />
+      )}
       {ctx && (
         <ContextMenu
           ctx={ctx}

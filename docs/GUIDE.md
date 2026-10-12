@@ -13,27 +13,70 @@ handful of rules that keep your drives safe. For how sync works internally, read
 
 ## 1. Setup
 
-You need macOS, Python 3.14, Node 20+, and rekordbox 6 or 7 with a library in it.
+You need macOS, Python 3.12+ (3.14 recommended), Node 20+, and rekordbox 6 or 7 with a
+library in it.
 
 ```sh
 git clone <this repo> ~/Music/crate-constellation
 cd ~/Music/crate-constellation
-
-python3.14 -m venv .venv
-./.venv/bin/pip install -r requirements.txt
-(cd app && npm install)
-
-./run.sh import     # seed library.db from rekordbox's master.db (read-only, ~6 s)
-./run.sh build      # build the frontend
-./run.sh            # serve app + API at http://localhost:8765
+./setup.sh
 ```
 
-Open <http://localhost:8765>.
+`setup.sh` checks your tools, installs the engine and app dependencies, builds the app,
+starts it, and opens <http://localhost:8765>. It is safe to re-run, and it never touches
+rekordbox or any drive. Use `./setup.sh --no-open` to install without starting anything.
 
-**Importing is always safe.** The importer opens rekordbox's `master.db` read-only, so it
-can run while rekordbox is open. Re-run `./run.sh import` whenever you change things in
-rekordbox. The Sync screen also has a guarded "Re-import" button that shows which of
-your local edits would be overwritten first.
+### Getting started (in the app)
+
+On first launch the app opens **Getting started**, a four-step walkthrough. You can
+reopen it any time from the **?** button at the bottom of the rail.
+
+![Welcome](screenshots/00-onboarding-welcome.png)
+
+1. **Welcome:** what the app does, and what it never does.
+2. **Your library:** imports your rekordbox library with one click. Importing reads
+   rekordbox's `master.db` read-only, so it is safe with rekordbox open. It also shows
+   whether the optional analysis data (below) is present.
+
+   ![Your library](screenshots/00-onboarding-library.png)
+
+3. **Stick exports:** a short script that sets up stick writing (see the next section).
+4. **Ready:** a few tips, then into your library, or straight to building a stick.
+
+Later rekordbox changes come in through **Sync → Re-import**, which first shows which of
+your local edits would be overwritten. `./run.sh import` does the same from a terminal.
+
+### Stick exports: capturing the template
+
+Decks are strict about the files on a stick. The USB writer therefore copies the
+structure of a **genuine rekordbox export**: it clones the file header and each table's
+head page, then fills in your tracks. That template is personal library data, so it is
+**not in git**. Each install captures its own, once, into the gitignored `pdb-corpus/`.
+
+The **Stick exports** step walks you through it:
+
+1. Plug in a USB stick you can erase.
+2. In rekordbox, switch to *Export* mode and drag one small playlist (3–5 tracks) onto
+   the stick.
+3. Leave it plugged in. The app lists it; click **Use this stick**.
+
+   ![Pick the stick](screenshots/00-onboarding-sticks.png)
+
+4. Optionally, play a track from that same stick on your deck and tick **It played**.
+
+![Template ready](screenshots/00-onboarding-template-ready.png)
+
+The capture **only reads** the stick. It refuses sticks that Crate Constellation wrote,
+since the template must be rekordbox's own output. Before calling the template ready, it
+checks that the writer can build a valid `export.pdb` from it. Replacing a template keeps
+the old one as `pdb-corpus/deck-verified.bak-<time>`. From a terminal:
+
+```sh
+./run.sh template /Volumes/<STICK>            # add --replace to swap an existing one
+```
+
+Everything except writing sticks works without a template. Until there is one, the sync
+wizard explains what's missing instead of starting.
 
 ### Optional data from `library-management`
 
@@ -44,23 +87,6 @@ Two features read data produced by the companion analysis pipeline in
 |---|---|---|
 | "Sounds like" sidebar | `features_v2.sqlite` (discogs-effnet embeddings) | sidebar is empty |
 | Constellation map | `viz_arrays.npz` + `viz_meta.csv` → `engine/import_viz.py` | map is empty |
-
-### The PDB corpus (needed to write sticks)
-
-The USB writer uses a **rekordbox-written, deck-verified export as its structural
-template**. It clones the file header and each table's head page from that export. The
-template is personal library data, so it is **not in git**: `pdb-corpus/` is gitignored
-and lives only on the machine that built it.
-
-To write sticks on a new machine, build your own template:
-
-1. In rekordbox, export **one small playlist** to a freshly formatted stick.
-2. Play a track from it on your deck to confirm the deck accepts it.
-3. Copy the stick's `PIONEER/rekordbox/` (`.PIONEER/` on HFS+) to
-   `pdb-corpus/deck-verified/rekordbox/`.
-
-Library, Constellation, Energy, Backups and the USB *explorer* all work without a
-corpus. Only writing sticks needs one.
 
 ---
 
@@ -183,6 +209,7 @@ These rules exist because breaking them cost real data. Please follow them.
 
 ```sh
 ./run.sh dev                      # Vite hot reload on :5173, engine on :8765
+cd app && npx playwright install chromium   # once, for the test browser
 cd app && npx playwright test     # end-to-end tests against the running engine
 ```
 
@@ -196,6 +223,7 @@ cd app && npx playwright test     # end-to-end tests against the running engine
 ```
 engine/
   server.py            FastAPI app, all /api routes
+  onboarding.py        first-run status + stick-export template capture
   import_rekordbox.py  master.db → library.db (read-only)
   schema.sql           library.db schema
   usb_sync.py          the sync wizard's job: audio, ANLZ, PDBs, OneLibrary, settings
@@ -206,7 +234,7 @@ engine/
   matching.py / push_matching.py  Matching table (exportExt type 0)
   heal.py              Heal Library + artwork cache
   diff_pdb.py, diff_onelibrary.py, compare_exports.py, dump_device.py  forensics
-app/src/               React 19 + TypeScript UI (Vite)
+app/src/               React 19 + TypeScript UI (Vite); Onboarding.tsx = Getting started
 app/tests/             Playwright specs
 docs/                  format references and plans
 ```

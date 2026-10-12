@@ -146,7 +146,8 @@ def initialize(vol: Path, log=None) -> dict:
     gcred_dst = pdir / "extracted/gcred.dat"
     if not gcred_dst.exists():
         for cand in (CORPUS / "rb-export-2026-09-07/.PIONEER/extracted/gcred.dat",
-                     FRESH / "extracted/gcred.dat"):
+                     FRESH / "extracted/gcred.dat",
+                     CORPUS / "deck-verified/extracted/gcred.dat"):
             if cand.exists():
                 shutil.copy2(cand, gcred_dst)
                 written.append("extracted/gcred.dat")

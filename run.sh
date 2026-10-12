@@ -18,6 +18,9 @@ cd "$(dirname "$0")"
 RELOAD=(--reload --reload-dir engine --timeout-graceful-shutdown 3)
 case "$1" in
 import)  ./.venv/bin/python engine/import_rekordbox.py ;;
+template) # capture the stick-export template from a rekordbox-exported stick
+         # (same as Getting started → Stick exports): ./run.sh template /Volumes/X [--replace]
+         shift; exec ./.venv/bin/python -m engine.onboarding "$@" ;;
 dev)     # hot-reload frontend on :5173 proxying to the engine
          (./.venv/bin/uvicorn engine.server:app --port 8765 $RELOAD &)
          cd app && npm run dev ;;

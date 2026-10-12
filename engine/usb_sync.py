@@ -234,7 +234,10 @@ FRESH = CORPUS / "fresh-export"
 # which only the newest one carries.
 SETTINGS_NAMES = ("DEVSETTING.DAT", "MYSETTING.DAT", "MYSETTING2.DAT",
                   "DJMMYSETTING.DAT", "djprofile.nxs")
-SETTINGS_SOURCES = (CORPUS / "rb-export-2026-09-07/.PIONEER", FRESH, CORPUS)
+# deck-verified/ is last: an install whose only template was captured by
+# onboarding keeps its settings there (engine/onboarding.py)
+SETTINGS_SOURCES = (CORPUS / "rb-export-2026-09-07/.PIONEER", FRESH, CORPUS,
+                    CORPUS / "deck-verified")
 
 
 # EXPERIMENTAL — drives that already hold a mirror of the library.

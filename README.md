@@ -30,19 +30,20 @@ Working screens over `library.db` (seeded from rekordbox master.db):
 **USB sync is live and deck-verified** — the wizard builds fully playable
 XDJ-XZ sticks with no rekordbox involved. See [SYNCING.md](SYNCING.md) for
 how it works, the format rules, and maintenance. Writing sticks needs a local
-`pdb-corpus/` template, which is not in git — see the guide.
+template captured from one small rekordbox export; the app's Getting started
+step does it for you.
 
-Tests: `cd app && npx playwright test` (51 tests).
+Tests: `cd app && npx playwright test` (54 tests).
 
 ## Run
 
-    python3.14 -m venv .venv && ./.venv/bin/pip install -r requirements.txt
-    (cd app && npm install)
+    ./setup.sh        # first time: install, build, start, open (Getting started walks you through the rest)
 
     ./run.sh import   # (re)seed library.db from rekordbox — read-only, safe anytime
     ./run.sh build    # build the frontend
     ./run.sh          # serve app + API at http://localhost:8765
     ./run.sh dev      # frontend hot reload on :5173 (engine on :8765)
+    ./run.sh template /Volumes/X   # capture the stick-export template
 
 ## Layout
 

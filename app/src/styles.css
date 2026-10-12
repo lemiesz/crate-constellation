@@ -409,3 +409,67 @@ body {
 .pe-chip.removed { color: #e5484d; border-color: rgba(229,72,77,.4); }
 .pe-fold { flex: none; display: block; width: 100%; padding: 8px 6px 4px;
   font-size: 11.5px; color: var(--muted); }
+
+/* onboarding — rides on the wizard modal (.wizov/.wiz) */
+.obov { z-index: 80; background: rgba(0,0,0,.72); }
+.ob { width: 760px; max-height: 88vh; padding: 0; gap: 0; overflow: hidden; }
+.obsteps { display: flex; align-items: center; gap: 4px; padding: 12px 14px;
+  border-bottom: 1px solid var(--hair); }
+.obstep { display: flex; align-items: center; gap: 8px; border: none; background: none;
+  color: var(--muted); font: inherit; font-size: 12.5px; padding: 6px 10px; border-radius: 8px; cursor: pointer; }
+.obstep:hover { color: var(--ink2); }
+.obstep.on { color: var(--ink); background: var(--raised); }
+.obstep.done { color: var(--ink2); }
+.obn { width: 20px; height: 20px; border-radius: 50%; display: inline-flex; align-items: center;
+  justify-content: center; font-size: 11px; border: 1px solid var(--hair); font-variant-numeric: tabular-nums; }
+.obstep.on .obn { background: var(--accent); color: #0d0d0d; border-color: var(--accent); font-weight: 700; }
+.obstep.done .obn { color: var(--green); border-color: rgba(25,158,112,.5); }
+.obskip { margin-left: auto; border: none; background: none; color: var(--muted); font: inherit;
+  font-size: 12px; cursor: pointer; padding: 6px 8px; }
+.obskip:hover:not(:disabled) { color: var(--ink2); }
+.obskip:disabled { visibility: hidden; }
+.obbody { padding: 22px 26px 8px; overflow-y: auto; display: flex; flex-direction: column; gap: 14px; }
+.oblogo { align-self: flex-start; }
+.obh { margin: 0; font-size: 21px; font-weight: 650; letter-spacing: -.01em; }
+.oblead { margin: 0; color: var(--ink2); font-size: 13.5px; line-height: 1.6; max-width: 640px; }
+.obnote { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.obtiles { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.obtile { background: var(--raised); border: 1px solid var(--hair); border-radius: 10px; padding: 12px 14px;
+  font-size: 12.5px; color: var(--ink2); line-height: 1.5; }
+.obtile b { display: block; color: var(--ink); font-size: 13px; margin-bottom: 3px; }
+.obtile code { color: var(--accent); }
+.obsafe { border-left: 2px solid var(--green); padding: 8px 12px; font-size: 12.5px; color: var(--ink2);
+  line-height: 1.55; background: rgba(25,158,112,.07); border-radius: 0 8px 8px 0; }
+.obsafe b { color: var(--ink); }
+.obrows { display: flex; flex-direction: column; border: 1px solid var(--hair); border-radius: 10px; }
+.obrow { display: flex; align-items: center; gap: 12px; padding: 12px 14px; }
+.obrow + .obrow { border-top: 1px solid var(--hair); }
+.obrow > div { flex: 1; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.obrow span { color: var(--muted); font-size: 12px; line-height: 1.45; }
+.obrow em { font-style: normal; color: var(--muted); font-size: 11px; }
+.obrow .syncbtn { width: auto; margin-top: 0; padding: 6px 14px; }
+.obcheck { width: 22px; height: 22px; flex-shrink: 0; border-radius: 50%; display: inline-flex;
+  align-items: center; justify-content: center; font-size: 12px; border: 1px solid var(--hair); color: var(--muted); }
+.obcheck.ok { background: rgba(25,158,112,.18); border-color: rgba(25,158,112,.6); color: #3fd19f; }
+.obtick { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--ink2); cursor: pointer; }
+.obscript { margin: 0; padding-left: 22px; display: flex; flex-direction: column; gap: 12px;
+  font-size: 13px; color: var(--ink2); line-height: 1.55; }
+.obscript li::marker { color: var(--accent); font-weight: 700; }
+.obscript b { color: var(--ink); }
+.obscript i { font-style: normal; color: var(--ink); background: var(--raised); padding: 0 5px; border-radius: 4px; }
+.obsticks { margin-top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.obstick { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border: 1px solid var(--hair);
+  border-radius: 8px; background: var(--raised); }
+.obstick > div { flex: 1; display: flex; flex-direction: column; font-size: 13px; }
+.obstick span { color: var(--muted); font-size: 12px; }
+.obwait { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12.5px;
+  padding: 10px 12px; border: 1px dashed var(--hair); border-radius: 8px; }
+.obpulse { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); animation: obpulse 1.4s infinite; }
+@keyframes obpulse { 0%, 100% { opacity: .25; } 50% { opacity: 1; } }
+.oblog { margin: 0 26px 8px; padding: 10px 12px; border-radius: 8px; font-size: 11.5px; white-space: pre-wrap;
+  font-family: ui-monospace, monospace; background: rgba(25,158,112,.08); color: #8fe0c2;
+  border: 1px solid rgba(25,158,112,.3); }
+.oblog.err { background: rgba(213,81,81,.08); color: #f0a0a0; border-color: rgba(213,81,81,.35); }
+.ob .wizfoot { padding: 12px 18px; border-top: 1px solid var(--hair); }
+.ob .wizfoot .obskip { margin-left: 0; }
+.obalt { width: auto; margin-top: 0; padding: 7px 16px; }

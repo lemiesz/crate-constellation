@@ -13,18 +13,21 @@ your memory.
 ## Commands
 
 ```sh
+./setup.sh           # fresh clone: deps, build, start, open (--no-open to skip starting)
+./run.sh template /Volumes/<STICK> [--replace]   # capture stick-export template (read-only on the stick)
 ./run.sh import      # master.db → library.db, read-only, safe with rekordbox open
 ./run.sh build       # build app/dist
 ./run.sh             # engine + built app on :8765 (always --reload)
 ./run.sh restart     # kill whatever holds :8765, come back up
 ./run.sh dev         # Vite on :5173 + engine
-cd app && npx playwright test          # 51 e2e tests; usb specs skip with no stick
+cd app && npx playwright test          # 54 e2e tests; usb specs skip with no stick
 ./.venv/bin/python -m engine.verify_pdb /Volumes/<STICK>   # structural PDB checks
 ./.venv/bin/python -m engine.dump_device /Volumes/<STICK>  # full device state, for diffing
 ```
 
-Playwright's bundled browser may not be installed; scripts can use
-`chromium.launch({ channel: "chrome" })`.
+Run `npx playwright install chromium` once if the bundled browser is missing. Two specs
+depend on machine state, not code: `views` "backups" needs a rekordbox `master.db`
+backup on disk, and `wizard` "plan" needs T7 mounted to size audio.
 
 ## How to work here
 
@@ -120,11 +123,31 @@ Playwright's bundled browser may not be installed; scripts can use
   (Kind 4 = loop, never a hot slot). Entries descending by time, position in ms,
   `loop_time = 0xFFFFFFFF` for a point. Dedupe (14k colliding rows) and clamp to 8.
 
+## First run / onboarding
+
+- `engine/onboarding.py` + `app/src/Onboarding.tsx` = **Getting started**. It opens by itself
+  only when the library is empty and `app-state.json` (gitignored) lacks
+  `onboarding_completed`; the rail's **?** reopens it.
+- The server creates an empty `library.db` from `schema.sql` on a fresh install, so every
+  screen renders before the first import.
+- Template capture copies a rekordbox stick's `PIONEER/` into `pdb-corpus/deck-verified/`
+  (rekordbox DBs + settings + `extracted/gcred.dat` + `template.json`). OneLibrary's WAL is
+  checkpointed on OUR copy, because the writer copies only the main file. It refuses our own
+  sticks (`crate-sync.json`), validates by building an empty `export.pdb` through
+  `verify_pdb`, and moves an existing template aside, never overwrites it.
+- `deck-verified/` is the LAST entry in `SETTINGS_SOURCES` and the gcred fallbacks, so an
+  install with the older corpus resolves byte-identically.
+- `/api/usb/wizard/start` and `/api/usb/initialize` return 409 when there is no template.
+- To test the new-user path without touching the real install: rsync the repo (minus
+  `pdb-corpus`, `library.db*`, `art-cache`, `app-state.json`) to the scratchpad, symlink
+  `.venv`, serve on another port, and use `hdiutil create -fs HFS+` images as sticks.
+  Detach the images before running the suite.
+
 ## Data outside this repo
 
 - `pdb-corpus/` is **gitignored and local-only** (personal library exports). It is the
   writer's runtime template (`deck-verified/rekordbox/`) and the parity reference.
-  Never delete it. `docs/GUIDE.md` explains how to build one.
+  Never delete it. A new install captures one via Getting started (`engine/onboarding.py`).
 - `~/Music/library-management` holds the analysis pipeline: embeddings
   (`features_v2.sqlite`), viz arrays (`viz_arrays.npz`), energy calibration, ingest, and
   stick backups (`stick-backups/`). Its skills live in that repo, not here.
