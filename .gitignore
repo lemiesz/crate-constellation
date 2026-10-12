@@ -8,3 +8,4 @@ art-cache/
 test-results/
 playwright-report/
 nohup.out
+pdb-corpus/

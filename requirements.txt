@@ -1,0 +1,10 @@
+# Engine (Python 3.14). Pinned to what the working build runs.
+fastapi==0.141.1
+uvicorn==0.52.4
+watchfiles==1.2.0
+pyrekordbox==0.4.4
+sqlcipher3-wheels==0.5.7
+SQLAlchemy==2.0.52
+mutagen==1.48.1
+numpy==2.5.2
+pillow==12.3.0
