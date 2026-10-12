@@ -137,7 +137,9 @@ deletion, so asserting it flags real, deck-accepted files as broken.
 
 ## The corpus (do not delete)
 
-`pdb-corpus/` holds the irreplaceable references:
+`pdb-corpus/` holds the irreplaceable references. It is **gitignored and
+local-only** (it is personal library data), so back it up separately;
+`docs/GUIDE.md` explains how to build one on a new machine:
 
 - `deck-verified/` — fresh rekordbox export **confirmed working on the XZ**;
   the writer's template (head pages, generations, exportExt) and diff target
